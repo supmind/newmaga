@@ -12,6 +12,7 @@ class Crawler(Maga):
         metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
         if metadata:
             logging.info("Successfully downloaded metadata for infohash: %s", infohash)
+            logging.info("Successfully downloaded metadata for infohash: %s", metadata)
             info = metadata.get(b'info')
             if not info:
                 logging.warning("No 'info' dict in metadata for infohash: %s", infohash)
