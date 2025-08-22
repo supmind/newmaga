@@ -35,7 +35,9 @@ class Downloader:
             self._wait_for_alert()
             if time.time() - meta_start_time > 60:
                 print(f"Timeout getting metadata for {infohash}")
-                self.ses.remove_torrent(handle, lt.session_handle.delete_files)
+                try:
+                    self.ses.remove_torrent(handle, lt.session.delete_files)
+                except Exception: pass
                 del self.handles[infohash]
                 return None
         return handle
@@ -72,7 +74,8 @@ class Downloader:
                 return b''
 
             s = handle.status()
-            if s.state in [lt.torrent_status.state_t.finished, lt.torrent_status.state_t.seeding]:
+            # Fix for older libtorrent API: use direct attribute access
+            if s.state in [lt.torrent_status.finished, lt.torrent_status.seeding]:
                 break
 
             alerts = self.ses.pop_alerts()
@@ -100,7 +103,8 @@ class Downloader:
         for infohash, handle in list(self.handles.items()):
             try:
                 if handle.is_valid():
-                    self.ses.remove_torrent(handle, lt.session_handle.delete_files)
-            except lt.error:
+                    # Fix for older libtorrent API: use lt.session.delete_files
+                    self.ses.remove_torrent(handle, lt.session.delete_files)
+            except Exception: # Fix for older libtorrent API: lt.error does not exist
                 pass
         self.handles = {}
