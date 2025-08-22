@@ -100,7 +100,6 @@ class Crawler(Maga):
             return
 
         self.processed_infohashes.add(infohash)
-        print(f"[Crawler] New infohash found: {infohash}. Trying to get metadata from {peer_addr}.")
 
         loop = asyncio.get_event_loop()
         try:
