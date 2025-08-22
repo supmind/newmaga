@@ -35,7 +35,11 @@ class Downloader:
                 return None
         print("Metadata downloaded.")
 
-        handle.prioritize_files([0] * handle.get_torrent_info().num_files())
+        # Prioritize no files by default.
+        # Use modern API torrent_file() instead of deprecated get_torrent_info()
+        torrent_file = handle.torrent_file()
+        if torrent_file:
+            handle.prioritize_files([0] * torrent_file.num_files())
         return handle
 
     def _wait_for_alert(self, timeout=1.0):
@@ -47,11 +51,14 @@ class Downloader:
         if not handle:
             return b''
 
-        tor_info = handle.get_torrent_info()
-        piece_size = tor_info.piece_length()
-        file_info = tor_info.file_at(file_index)
+        torrent_file = handle.torrent_file()
+        if not torrent_file:
+            print("Downloader: Could not get torrent_file from handle.")
+            return b''
 
-        file_offset = file_info.offset
+        files = torrent_file.files()
+        piece_size = torrent_file.piece_length()
+        file_offset = files.file_offset(file_index)
         abs_offset = file_offset + offset
 
         start_piece, start_piece_offset = divmod(abs_offset, piece_size)
@@ -129,24 +136,29 @@ class Downloader:
         self.handles = {}
 
 if __name__ == '__main__':
+    # This block is for basic testing of the downloader itself.
     downloader = Downloader()
     infohash = "08ada5a7a6183aae1e09d831df6748d566095a10" # Sintel (streamable)
 
     handle = downloader.get_torrent_handle(infohash)
     if handle:
-        tor_info = handle.get_torrent_info()
-        file_index = 0
-        file_info = tor_info.file_at(file_index)
+        torrent_file = handle.torrent_file()
+        if torrent_file:
+            files = torrent_file.files()
+            file_index = 0 # Assuming we want the first file
+            file_path = files.file_path(file_index)
 
-        offset = 10 * 1024 * 1024 # 10MB into the file
-        size = 1024
+            offset = 10 * 1024 * 1024 # 10MB into the file
+            size = 1024
 
-        print(f"\nAttempting to download {size} bytes from file '{file_info.path}' at offset {offset}")
-        data = downloader.download_byte_range(infohash, file_index, offset, size)
+            print(f"\nAttempting to download {size} bytes from file '{file_path}' at offset {offset}")
+            data = downloader.download_byte_range(infohash, file_index, offset, size)
 
-        if data:
-            print(f"Successfully downloaded {len(data)} bytes.")
+            if data:
+                print(f"Successfully downloaded {len(data)} bytes.")
+            else:
+                print("Download failed or returned no data.")
         else:
-            print("Download failed or returned no data.")
+            print("Could not get torrent file info.")
 
     downloader.close_session()

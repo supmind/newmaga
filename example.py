@@ -59,15 +59,20 @@ def run_screenshot_task(infohash: str, target_file_index: int):
             logging.error(f"TASK {infohash}: Could not get handle.")
             return
 
-        tor_info = handle.get_torrent_info()
-        if target_file_index >= tor_info.num_files():
-            logging.error(f"TASK {infohash}: Invalid file index {target_file_index} for torrent with {tor_info.num_files()} files.")
+        torrent_file = handle.torrent_file()
+        if not torrent_file:
+            logging.error(f"TASK {infohash}: Could not get torrent_file from handle.")
             return
 
-        file_info = tor_info.file_at(target_file_index)
-        file_size = file_info.size
+        files = torrent_file.files()
+        if target_file_index >= files.num_files():
+            logging.error(f"TASK {infohash}: Invalid file index {target_file_index} for torrent with {files.num_files()} files.")
+            return
 
-        logging.info(f"TASK {infohash}: Creating stream for file '{file_info.path}' (index {target_file_index}, size {file_size})")
+        file_size = files.file_size(target_file_index)
+        file_path = files.file_path(target_file_index)
+
+        logging.info(f"TASK {infohash}: Creating stream for file '{file_path}' (index {target_file_index}, size {file_size})")
 
         io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
 
