@@ -119,10 +119,11 @@ class Maga(KRPCProtocol):
         self.loop.close()
 
     def handle_response(self, msg, addr):
-        args = msg[constants.KRPC_R]
-        if constants.KRPC_NODES in args:
-            for node_id, ip, port in utils.split_nodes(args[constants.KRPC_NODES]):
-                self.ping(addr=(ip, port))
+        if constants.KRPC_R in msg:
+            args = msg[constants.KRPC_R]
+            if constants.KRPC_NODES in args:
+                for node_id, ip, port in utils.split_nodes(args[constants.KRPC_NODES]):
+                    self.ping(addr=(ip, port))
 
     async def handle_query(self, msg, addr):
         args = msg[constants.KRPC_A]

@@ -5,7 +5,7 @@ logging.basicConfig(level=logging.INFO)
 
 
 class Crawler(Maga):
-    async def handler(self, infohash, addr):
+    async def handle_announce_peer(self, infohash, addr, peer_addr):
         logging.info(infohash)
 
 crawler = Crawler()
