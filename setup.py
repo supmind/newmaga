@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
     name='Maga',
@@ -12,7 +12,7 @@ setup(
     platforms='any',
     zip_safe=False,
     include_package_data=True,
-    py_modules=['maga'],
+    packages=find_packages(),
     install_requires=open("requirements.txt").readlines(),
     keywords=['dht', 'asyncio', 'crawler', 'bt', 'kad'],
     classifiers=[
