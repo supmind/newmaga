@@ -34,11 +34,12 @@ class Downloader:
         while not handle.has_metadata():
             self._wait_for_alert()
             if time.time() - meta_start_time > 60:
-                print(f"Timeout getting metadata for {infohash}")
+                print(f"[{infohash}] Timeout getting metadata")
                 try:
                     self.ses.remove_torrent(handle, lt.session.delete_files)
                 except Exception: pass
-                del self.handles[infohash]
+                if infohash in self.handles:
+                    del self.handles[infohash]
                 return None
         return handle
 
@@ -71,10 +72,10 @@ class Downloader:
         pieces_done = set()
         while pieces_done != pieces_needed:
             if time.time() - download_start_time > 1800: # 30 min timeout
+                print(f"[{infohash}] Timeout downloading range")
                 return b''
 
             s = handle.status()
-            # Fix for older libtorrent API: use direct attribute access
             if s.state in [lt.torrent_status.finished, lt.torrent_status.seeding]:
                 break
 
@@ -91,7 +92,10 @@ class Downloader:
             if isinstance(alert, lt.read_piece_alert) and alert.piece == piece_index:
                  all_data[piece_index] = bytes(alert.buffer)
             else:
-                return b'' # Failed to read
+                return b''
+
+        if len(all_data) != len(pieces_needed):
+            return b''
 
         full_chunk = b"".join(all_data[i] for i in sorted(all_data))
         p_offset = start_piece * piece_size
@@ -103,8 +107,7 @@ class Downloader:
         for infohash, handle in list(self.handles.items()):
             try:
                 if handle.is_valid():
-                    # Fix for older libtorrent API: use lt.session.delete_files
                     self.ses.remove_torrent(handle, lt.session.delete_files)
-            except Exception: # Fix for older libtorrent API: lt.error does not exist
+            except Exception:
                 pass
         self.handles = {}

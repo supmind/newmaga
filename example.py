@@ -36,18 +36,14 @@ def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, s
     This process is self-contained. It creates its own downloader
     and handles one torrent from start to finish.
     """
-    print(f"[Worker:{os.getpid()}] Started for {infohash}")
     downloader = Downloader()
     try:
-        # The IO adapter uses the downloader owned by this process
         io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
-        create_screenshots_from_stream(io_adapter, infohash, stats_queue)
+        create_screenshots_from_stream(io_adapter, infohash, stats_queue, num_screenshots=20)
     except Exception as e:
         print(f"[Worker:{os.getpid()}] Unhandled error for {infohash}: {e}")
     finally:
         downloader.close_session()
-        print(f"[Worker:{os.getpid()}] Finished for {infohash}")
-
 
 def statistics_worker(queue):
     total_screenshots = 0
@@ -84,8 +80,6 @@ class Crawler(Maga):
         torrent_name_str = torrent_name_bytes.decode('utf-8', 'ignore')
         if not classify_torrent(torrent_name_str): return
 
-        print(f"[Crawler] Found classified torrent: '{torrent_name_str}'")
-
         target_file_index, largest_size = -1, 0
         files_metadata = metadata.get(b'files')
         if files_metadata:
@@ -102,8 +96,6 @@ class Crawler(Maga):
                 largest_size, target_file_index = metadata.get(b'length', 0), 0
 
         if target_file_index != -1:
-            print(f"[Crawler] Handing off task for {infohash}")
-            # Note: We now pass a regular multiprocessing.Queue for stats
             p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, self.stats_queue))
             p.daemon = True
             p.start()
@@ -111,14 +103,11 @@ class Crawler(Maga):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
 
-    # A standard queue is sufficient for stats collection
     stats_queue = Queue()
 
-    # Start statistics thread
     stats_thread = threading.Thread(target=statistics_worker, args=(stats_queue,), daemon=True)
     stats_thread.start()
 
-    # Start the crawler
     print("[Main] Starting Crawler...")
     crawler = Crawler(stats_queue)
     crawler.run(6881)

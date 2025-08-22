@@ -50,6 +50,4 @@ class TorrentFileIO(io.RawIOBase):
         return data
 
     def close(self):
-        # The downloader session is managed by the worker process,
-        # so we don't close it here.
         pass
