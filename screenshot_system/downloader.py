@@ -1,12 +1,14 @@
 import libtorrent as lt
 import time
-from queue import Queue, Empty
+from queue import Empty
+
+def downloader_service_main(task_queue, result_queue):
+    """The main entry point for the downloader process."""
+    service = DownloaderService()
+    service.run(task_queue, result_queue)
 
 class DownloaderService:
-    def __init__(self, task_queue, result_queue):
-        self.task_queue = task_queue
-        self.result_queue = result_queue
-
+    def __init__(self):
         settings = lt.high_performance_seed()
         settings['listen_interfaces'] = '0.0.0.0:0'
         settings['alert_mask'] = (
@@ -20,6 +22,7 @@ class DownloaderService:
         self.ses.add_dht_router("dht.transmissionbt.com", 6881)
 
         self.handles = {}
+        self.active_requests = {}
 
     def get_or_add_handle(self, infohash):
         if infohash in self.handles:
@@ -27,7 +30,6 @@ class DownloaderService:
             if handle and handle.is_valid():
                 return handle
 
-        print(f"[Downloader] Adding new torrent: {infohash}")
         magnet_link = f"magnet:?xt=urn:btih:{infohash}"
         params = {'save_path': '/tmp/', 'storage_mode': lt.storage_mode_t(2)}
         handle = lt.add_magnet_uri(self.ses, magnet_link, params)
@@ -39,21 +41,43 @@ class DownloaderService:
             if time.time() - meta_start_time > 60:
                 print(f"[Downloader] Timeout getting metadata for {infohash}")
                 return None
-        print(f"[Downloader] Metadata received for {infohash}")
         return handle
 
-    def run(self):
-        print("[DownloaderService] Thread Started.")
+    def process_alerts(self, result_queue):
+        alerts = self.ses.pop_alerts()
+        for alert in alerts:
+            if isinstance(alert, lt.read_piece_alert):
+                request_id = alert.user_data
+                if request_id in self.active_requests:
+                    request = self.active_requests[request_id]
+                    request['pieces_data'][alert.piece] = bytes(alert.buffer)
+
+                    if len(request['pieces_data']) == len(request['pieces_needed']):
+                        full_chunk = b"".join(request['pieces_data'][i] for i in sorted(request['pieces_data']))
+
+                        p_size = request['piece_size']
+                        p_offset = request['start_piece'] * p_size
+                        start = request['abs_offset'] - p_offset
+                        end = start + request['size']
+                        data = full_chunk[start:end]
+
+                        result_queue.put({'request_id': request_id, 'data': data})
+                        del self.active_requests[request_id]
+
+            elif isinstance(alert, lt.torrent_error_alert):
+                print(f"[DownloaderService] Torrent Error: {alert.error.message()}")
+
+    def run(self, task_queue, result_queue):
+        print("[DownloaderService] Started.")
         while True:
             try:
-                task = self.task_queue.get(timeout=0.2)
+                task = task_queue.get(timeout=0.2)
                 request_id = task.get('request_id')
                 infohash = task.get('infohash')
-                print(f"[Downloader] Received task {request_id} for {infohash}")
 
                 handle = self.get_or_add_handle(infohash)
                 if not handle:
-                    self.result_queue.put({'request_id': request_id, 'error': 'Could not get handle'})
+                    result_queue.put({'request_id': request_id, 'error': 'Could not get handle'})
                     continue
 
                 ti = handle.torrent_file()
@@ -66,48 +90,19 @@ class DownloaderService:
 
                 pieces_needed = set(range(start_piece, end_piece + 1))
 
+                self.active_requests[request_id] = {
+                    'pieces_needed': pieces_needed, 'pieces_data': {},
+                    'abs_offset': abs_offset, 'size': task['size'],
+                    'piece_size': piece_size, 'start_piece': start_piece
+                }
+
                 for p_idx in pieces_needed:
-                    handle.piece_priority(p_idx, 7)
-
-                download_start_time = time.time()
-                pieces_done = set()
-                while pieces_done != pieces_needed:
-                    if time.time() - download_start_time > 180:
-                        break
-
-                    alerts = self.ses.pop_alerts()
-                    for alert in alerts:
-                        if isinstance(alert, lt.piece_finished_alert):
-                            if alert.piece_index in pieces_needed:
-                                pieces_done.add(alert.piece_index)
-
-                if pieces_done != pieces_needed:
-                    self.result_queue.put({'request_id': request_id, 'error': 'Download timeout'})
-                    continue
-
-                all_data = {}
-                for piece_index in sorted(list(pieces_needed)):
-                    handle.read_piece(piece_index)
-                    alert = self.ses.wait_for_alert(10000)
-                    if isinstance(alert, lt.read_piece_alert) and alert.piece == piece_index:
-                         all_data[piece_index] = bytes(alert.buffer)
-                    else:
-                        all_data = None
-                        break
-
-                if all_data is None:
-                    self.result_queue.put({'request_id': request_id, 'error': 'Failed to read pieces'})
-                    continue
-
-                full_chunk = b"".join(all_data[i] for i in sorted(all_data))
-                p_offset = start_piece * piece_size
-                start = abs_offset - p_offset
-                end = start + task['size']
-                data = full_chunk[start:end]
-
-                self.result_queue.put({'request_id': request_id, 'data': data})
+                    handle.read_piece(p_idx, request_id)
 
             except Empty:
-                self.ses.post_torrent_updates()
+                pass
             except Exception as e:
                 print(f"[DownloaderService] Unhandled error: {e}")
+
+            self.ses.post_torrent_updates()
+            self.process_alerts(result_queue)

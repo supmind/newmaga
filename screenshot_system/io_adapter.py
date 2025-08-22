@@ -1,6 +1,6 @@
 import io
 import uuid
-from queue import Queue, Empty
+from queue import Empty
 
 class TorrentFileIO(io.RawIOBase):
     def __init__(self, infohash: str, file_index: int, file_size: int, task_queue, dispatcher):

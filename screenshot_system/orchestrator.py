@@ -5,9 +5,6 @@ import traceback
 os.makedirs('screenshots', exist_ok=True)
 
 def create_screenshots_from_stream(file_like_object, infohash: str, queue, num_screenshots: int = 20):
-    """
-    Generates screenshots from a given file-like object that PyAV can read.
-    """
     container = None
     try:
         print(f"[{infohash}] Orchestrator: Opening stream with PyAV...")
