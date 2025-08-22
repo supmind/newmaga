@@ -83,14 +83,23 @@ class Downloader:
                         expected_pieces.remove(alert.piece)
 
         print("All required pieces received.")
+
+        # Debugging: check the size of each piece
+        for piece_index, piece_data in downloaded_data.items():
+            print(f"  - Debug: Piece {piece_index} has size {len(piece_data)}")
+
         full_chunk = b"".join(downloaded_data[i] for i in sorted(downloaded_data))
+        print(f"  - Debug: Total combined chunk size is {len(full_chunk)}")
 
         # Slice the final result
         # The start of our desired data relative to the start of the downloaded chunk
         slice_start = abs_offset - (start_piece * piece_size)
         slice_end = slice_start + size
 
-        return full_chunk[slice_start:slice_end]
+        result = full_chunk[slice_start:slice_end]
+        print(f"  - Debug: Slicing from {slice_start} to {slice_end}. Result size: {len(result)}")
+
+        return result
 
     def close_session(self):
         for infohash, handle in list(self.handles.items()):

@@ -82,15 +82,17 @@ def create_screenshots_for_torrent(infohash: str, file_index: int, num_screensho
         downloader.close_session()
 
 if __name__ == '__main__':
-    # Use a known good, streamable torrent for this test
-    infohash = "08ada5a7a6183aae1e09d831df6748d566095a10" # Sintel trailer
+    # Example of how to use the orchestrator.
+    # A torrent infohash for a well-seeded, public domain movie.
+    # e.g., Sintel trailer
+    infohash = "08ada5a7a6183aae1e09d831df6748d566095a10"
     if len(sys.argv) > 1:
         infohash = sys.argv[1]
     else:
         print("Usage: python -m screenshot_system.orchestrator <infohash>")
         print(f"Using default infohash for Sintel trailer: {infohash}")
 
-    file_index = 0
+    file_index = 0 # Assuming the video is the first file.
 
     print(f"Orchestrator Test: Starting with infohash {infohash}")
     create_screenshots_for_torrent(infohash, file_index, num_screenshots=3)
