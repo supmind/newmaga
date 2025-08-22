@@ -3,12 +3,12 @@ import asyncio
 import logging
 import os
 import re
-from multiprocessing import Process
+import time
+import threading
+from multiprocessing import Process, Manager
 from screenshot_system.orchestrator import create_screenshots_from_stream
 from screenshot_system.downloader import Downloader
 from screenshot_system.io_adapter import TorrentFileIO
-
-logging.basicConfig(level=logging.INFO)
 
 # --- Start of Classification System ---
 
@@ -47,46 +47,57 @@ def classify_torrent(name):
 
 # --- End of Classification System ---
 
-def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, target_path_for_logging: str):
+def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, queue):
     """
     This function runs in a separate process.
     It handles the entire lifecycle of downloading and screenshotting for one torrent.
     """
     downloader = Downloader()
     try:
-        # The handle is primarily needed to access torrent file structure and initiate downloads.
         handle = downloader.get_torrent_handle(infohash)
         if not handle:
-            logging.error(f"TASK {infohash}: Could not get handle for '{target_path_for_logging}'.")
             return
 
-        logging.info(f"TASK {infohash}: Creating stream for file '{target_path_for_logging}' (index {target_file_index}, size {file_size})")
-
-        # Pre-buffer the first 2MB of the file to ensure PyAV has enough data to probe the format
-        # without getting stuck on slow connections. This is a workaround for older PyAV versions
-        # that don't support the 'probe_size' argument.
-        logging.info(f"TASK {infohash}: Pre-buffering first 2MB of the file for probing...")
+        # Pre-buffer the first 2MB of the file to ensure PyAV has enough data
         pre_buffer_size = 2 * 1024 * 1024
         downloader.download_byte_range(infohash, target_file_index, 0, pre_buffer_size)
-        logging.info(f"TASK {infohash}: Pre-buffering complete.")
 
-        # The IO adapter is the file-like object that PyAV will read from.
         io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
 
-        # The orchestrator processes the stream to generate screenshots.
-        create_screenshots_from_stream(io_adapter, infohash, num_screenshots=20)
+        create_screenshots_from_stream(io_adapter, infohash, queue, num_screenshots=20)
 
-    except Exception as e:
-        logging.error(f"TASK {infohash}: An unexpected error occurred: {e}", exc_info=True)
+    except Exception:
+        # Errors are handled silently in the child process
+        pass
     finally:
         downloader.close_session()
-        logging.info(f"TASK {infohash}: Process finished for '{target_path_for_logging}'.")
+
+def statistics_worker(queue):
+    """
+    A worker that runs in a thread to periodically print stats.
+    """
+    total_screenshots = 0
+    while True:
+        time.sleep(60)
+
+        period_screenshots = 0
+        while not queue.empty():
+            try:
+                queue.get_nowait()
+                period_screenshots += 1
+            except queue.Empty:
+                break
+
+        total_screenshots += period_screenshots
+
+        print(f"[STATS] Last 60s: {period_screenshots} screenshots. Total: {total_screenshots} screenshots.")
 
 
 class Crawler(Maga):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, queue, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.processed_infohashes = set()
+        self.queue = queue
 
     async def handle_announce_peer(self, infohash, addr, peer_addr):
         if infohash in self.processed_infohashes:
@@ -111,10 +122,7 @@ class Crawler(Maga):
         if not category:
             return
 
-        logging.info(f"Classifier: Found target torrent '{torrent_name_str}' in category '{category}'")
-
         target_file_index = -1
-        target_path_str = ""
         largest_size = 0
 
         files_metadata = metadata.get(b'files')
@@ -130,25 +138,27 @@ class Crawler(Maga):
                     if file_size > largest_size:
                         largest_size = file_size
                         target_file_index = i
-                        # Create a clean path for logging purposes
-                        decoded_path_parts = [p.decode('utf-8', 'ignore') for p in path_parts_bytes]
-                        target_path_str = os.path.join(torrent_name_str, *decoded_path_parts)
-
         else:  # Single-file torrent
             if torrent_name_str.lower().endswith('.mp4'):
                 largest_size = metadata.get(b'length', 0)
                 target_file_index = 0
-                target_path_str = torrent_name_str
 
         if target_file_index != -1:
-            logging.info(f"Handing off to screenshot process: infohash={infohash}, target_path='{target_path_str}'")
-            p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, target_path_str))
+            p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, self.queue))
             p.daemon = True
             p.start()
-        else:
-            logging.info(f"No .mp4 file found in torrent '{torrent_name_str}'")
 
 
 if __name__ == "__main__":
-    crawler = Crawler()
-    crawler.run(6881)
+    # Set up logging to only show INFO for the main process, not for maga library
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger('maga').setLevel(logging.WARNING)
+
+    with Manager() as manager:
+        screenshot_queue = manager.Queue()
+
+        stats_thread = threading.Thread(target=statistics_worker, args=(screenshot_queue,), daemon=True)
+        stats_thread.start()
+
+        crawler = Crawler(queue=screenshot_queue)
+        crawler.run(6881)
