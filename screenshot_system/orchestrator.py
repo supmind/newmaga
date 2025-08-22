@@ -5,7 +5,7 @@ from .video import get_video_duration
 
 os.makedirs('screenshots', exist_ok=True)
 
-def create_screenshots_from_stream(file_like_object, num_screenshots: int = 20, mock_mode=False):
+def create_screenshots_from_stream(file_like_object, infohash: str, num_screenshots: int = 20):
     """
     Generates screenshots from a given file-like object that PyAV can read.
     """
@@ -44,8 +44,7 @@ def create_screenshots_from_stream(file_like_object, num_screenshots: int = 20, 
                 frame = next(container.decode(video=0))
 
                 print(f"  - Saving frame to image...")
-                prefix = "mock" if mock_mode else "screenshot"
-                output_filename = f"screenshots/{prefix}_{int(timestamp_sec)}.jpg"
+                output_filename = f"screenshots/{infohash}_{int(timestamp_sec)}.jpg"
                 frame.to_image().save(output_filename)
 
                 print(f"Orchestrator: Saved screenshot to {output_filename}")

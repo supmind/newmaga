@@ -74,7 +74,7 @@ def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, t
         io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
 
         # The orchestrator processes the stream to generate screenshots.
-        create_screenshots_from_stream(io_adapter, num_screenshots=20)
+        create_screenshots_from_stream(io_adapter, infohash, num_screenshots=20)
 
     except Exception as e:
         logging.error(f"TASK {infohash}: An unexpected error occurred: {e}", exc_info=True)
