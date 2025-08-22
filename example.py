@@ -104,7 +104,7 @@ class Crawler(Maga):
 
         loop = asyncio.get_event_loop()
         try:
-            metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop, loop_interval=0)
+            metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
         except Exception as e:
             print(f"[Crawler] Error getting metadata for {infohash}: {e}")
             return
