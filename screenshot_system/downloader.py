@@ -65,15 +65,26 @@ class Downloader:
 
         expected_pieces_to_finish = set(range(start_piece, end_piece + 1))
         start_time = time.time()
+        last_status_print = 0
         while expected_pieces_to_finish:
             if time.time() - start_time > 120: # 2 minute timeout for downloading
-                print("Timeout waiting for pieces to download.")
+                print("\nTimeout waiting for pieces to download.")
                 return b''
-            alerts = self._wait_for_alert()
+
+            # Print status every 2 seconds
+            if time.time() - last_status_print > 2:
+                s = handle.status()
+                state_str = ['queued', 'checking', 'downloading metadata', \
+                    'downloading', 'finished', 'seeding', 'allocating']
+                status_line = f"  - Status: {state_str[s.state]} | Progress: {s.progress * 100:.2f}% | Peers: {s.num_peers} | Down: {s.download_rate / 1000:.1f} kB/s"
+                print(status_line, end='\r')
+                last_status_print = time.time()
+
+            alerts = self._wait_for_alert(timeout=0.5)
             for alert in alerts:
                 if isinstance(alert, lt.piece_finished_alert):
                     if alert.piece_index in expected_pieces_to_finish:
-                        print(f"Finished downloading piece {alert.piece_index}")
+                        print(f"\nEvent: Finished downloading piece {alert.piece_index}")
                         expected_pieces_to_finish.remove(alert.piece_index)
 
         print("All required pieces finished downloading.")

@@ -14,13 +14,14 @@ def is_streamable(downloader, infohash, file_index, file_size) -> bool:
     Checks if an MP4 file is stream-optimized by checking for the moov atom
     in the first part of the file.
     """
-    print("Orchestrator: Checking if file is streamable...")
+    print("\nOrchestrator: Checking if file is streamable...")
     # Download the first 5MB. A moov atom is usually smaller than this.
     header_size = 5 * 1024 * 1024
+    print(f"Orchestrator: Attempting to download header ({header_size} bytes)...")
     header_data = downloader.download_byte_range(infohash, file_index, 0, min(header_size, file_size))
 
-    if not header_data:
-        print("Orchestrator: Could not download header to check for streamability.")
+    if not header_data or len(header_data) == 0:
+        print("Orchestrator: Could not download header to check for streamability. Download returned no data.")
         return False
 
     # Use get_video_duration as a proxy for a valid moov atom in the header
