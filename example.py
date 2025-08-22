@@ -94,12 +94,13 @@ class Crawler(Maga):
                  target_path_parts = [torrent_name_str]
 
         if target_path_parts:
-            logging.info(f"Handing off to screenshot orchestrator: {infohash}, file {'/'.join(target_path_parts)}")
+            target_path = "/".join(target_path_parts)
+            logging.info(f"Handing off to screenshot orchestrator: {infohash}, file {target_path}")
             loop.run_in_executor(
                 None,
                 create_screenshots_for_torrent,
                 infohash,
-                target_path_parts
+                target_path
             )
         else:
             logging.info(f"No .mp4 file found in torrent {infohash}")

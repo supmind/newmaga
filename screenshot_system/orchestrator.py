@@ -29,7 +29,7 @@ def is_streamable(downloader, infohash, file_index, file_size) -> bool:
         print("Orchestrator: File is not streamable (moov atom not found in header). Skipping.")
         return False
 
-def create_screenshots_for_torrent(infohash: str, target_path_parts: list, num_screenshots: int = 10, downloader=None):
+def create_screenshots_for_torrent(infohash: str, target_path: str, num_screenshots: int = 10, downloader=None):
     close_downloader_on_exit = False
     if downloader is None:
         downloader = Downloader()
@@ -39,7 +39,7 @@ def create_screenshots_for_torrent(infohash: str, target_path_parts: list, num_s
         target_file_index = -1
         file_size = -1
 
-        if not hasattr(downloader, 'get_torrent_handle'): # Mock downloader branch
+        if not hasattr(downloader, 'get_torrent_handle'):  # Mock downloader branch
             print("Orchestrator: Using mock downloader. Bypassing torrent metadata lookup.")
             mock_info = downloader.get_file_info()
             if not mock_info:
@@ -47,7 +47,7 @@ def create_screenshots_for_torrent(infohash: str, target_path_parts: list, num_s
                 return
             target_file_index = 0  # Mock only has one file
             file_size = mock_info['size']
-        else: # Real downloader branch
+        else:  # Real downloader branch
             handle = downloader.get_torrent_handle(infohash)
             if not handle:
                 print(f"Orchestrator: Could not get handle for {infohash}")
@@ -56,12 +56,12 @@ def create_screenshots_for_torrent(infohash: str, target_path_parts: list, num_s
             file_info = None
             for i in range(tor_info.num_files()):
                 f = tor_info.file_at(i)
-                if os.path.join(*target_path_parts) == f.path:
+                if target_path == f.path:
                     target_file_index = i
                     file_info = f
                     break
             if target_file_index == -1:
-                print(f"Orchestrator: Could not find file '{os.path.join(*target_path_parts)}' in torrent {infohash}")
+                print(f"Orchestrator: Could not find file '{target_path}' in torrent {infohash}")
                 return
             file_size = file_info.size
 
@@ -70,6 +70,10 @@ def create_screenshots_for_torrent(infohash: str, target_path_parts: list, num_s
             return
 
         print("Orchestrator: Proceeding with screenshot generation...")
+        # The TorrentFileIO object acts as a file-like object for PyAV.
+        # When PyAV seeks and reads to decode a frame, it calls the `read()` method
+        # on the IO adapter, which in turn calls our downloader to fetch
+        # the required byte range from the torrent on-demand.
         io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
 
         with av.open(io_adapter, "r") as container:
