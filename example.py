@@ -54,12 +54,9 @@ class Crawler(Maga):
         self.processed_infohashes = set()
 
     async def handle_announce_peer(self, infohash, addr, peer_addr):
-        # Avoid processing the same torrent multiple times
         if infohash in self.processed_infohashes:
             return
 
-        # We need the metadata to classify and get file lists
-        # The original get_metadata is sufficient for this initial step
         loop = asyncio.get_event_loop()
         metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
         if not metadata:
@@ -73,38 +70,36 @@ class Crawler(Maga):
 
         torrent_name_str = torrent_name_bytes.decode('utf-8', 'ignore')
 
-        # 1. Classify the torrent
         category = classify_torrent(torrent_name_str)
         if not category:
             return
 
         logging.info(f"Classifier: Found target torrent '{torrent_name_str}' in category '{category}'")
 
-        # 2. Find the target video file (largest .mp4)
-        target_file_index = -1
+        # Find the target video file (largest .mp4) and its path
+        target_path_parts = None
         largest_size = 0
 
         if b'files' in metadata: # Multi-file
-            for i, f in enumerate(metadata[b'files']):
-                path_parts = f.get(b'path', [])
-                if path_parts:
-                    filename = path_parts[-1].decode('utf-8', 'ignore')
+            for f in metadata.get(b'files', []):
+                path_parts_bytes = f.get(b'path', [])
+                if path_parts_bytes:
+                    filename = path_parts_bytes[-1].decode('utf-8', 'ignore')
                     if filename.lower().endswith('.mp4'):
                         if f.get(b'length', 0) > largest_size:
                             largest_size = f.get(b'length', 0)
-                            target_file_index = i
+                            target_path_parts = [p.decode('utf-8', 'ignore') for p in path_parts_bytes]
         else: # Single-file
              if torrent_name_str.lower().endswith('.mp4'):
-                 target_file_index = 0
+                 target_path_parts = [torrent_name_str]
 
-        # 3. If we found a video file, start the screenshot process in a separate thread
-        if target_file_index != -1:
-            logging.info(f"Handing off to screenshot orchestrator: {infohash}, file index {target_file_index}")
+        if target_path_parts:
+            logging.info(f"Handing off to screenshot orchestrator: {infohash}, file {'/'.join(target_path_parts)}")
             loop.run_in_executor(
-                None, # Use the default thread pool executor
+                None,
                 create_screenshots_for_torrent,
                 infohash,
-                target_file_index
+                target_path_parts
             )
         else:
             logging.info(f"No .mp4 file found in torrent {infohash}")
