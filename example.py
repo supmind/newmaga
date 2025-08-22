@@ -10,8 +10,9 @@ logging.basicConfig(level=logging.INFO)
 
 CLASSIFICATION_RULES = {
     'japanese_av': {
-        'type': 'regex',
-        'pattern': r'\b[A-Z]{2,5}-?\d{2,5}\b'
+        'type': 'hybrid',
+        'regex': r'\b[A-Z0-9]{2,5}-?\d{2,5}\b',
+        'keywords': ['jav', 'jc']
     },
     'chinese_homemade': {
         'type': 'keywords',
@@ -34,13 +35,21 @@ def classify_torrent(name):
     Classifies a torrent based on its name.
     Returns the category name as a string, or None if no category matches.
     """
+    name_lower = name.lower()
     for category, rule in CLASSIFICATION_RULES.items():
-        if rule['type'] == 'regex':
-            if re.search(rule['pattern'], name, re.IGNORECASE):
+        rule_type = rule.get('type')
+        if rule_type == 'regex':
+            if re.search(rule.get('regex'), name, re.IGNORECASE):
                 return category
-        elif rule['type'] == 'keywords':
+        elif rule_type == 'keywords':
             for word in rule['words']:
-                if word in name:
+                if word.lower() in name_lower:
+                    return category
+        elif rule_type == 'hybrid':
+            if re.search(rule.get('regex'), name, re.IGNORECASE):
+                return category
+            for word in rule['keywords']:
+                if word in name_lower:
                     return category
     return None
 
