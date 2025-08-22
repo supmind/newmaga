@@ -4,7 +4,7 @@ from .video import get_video_duration
 
 os.makedirs('screenshots', exist_ok=True)
 
-def create_screenshots_from_stream(file_like_object, num_screenshots: int = 10, mock_mode=False):
+def create_screenshots_from_stream(file_like_object, num_screenshots: int = 20, mock_mode=False):
     """
     Generates screenshots from a given file-like object that PyAV can read.
 
@@ -33,8 +33,11 @@ def create_screenshots_from_stream(file_like_object, num_screenshots: int = 10, 
                     print(f"Orchestrator: Seeking to {timestamp_sec:.2f} seconds...")
                     # We seek to the timestamp in the container's time_base.
                     seek_target = int(timestamp_sec * av.time_base)
-                    container.seek(seek_target, backward=True, any_frame=True)
+                    # Seek to the nearest keyframe before the target timestamp.
+                    # 'any_frame=False' is crucial for performance.
+                    container.seek(seek_target, backward=True, any_frame=False, stream=container.streams.video[0])
 
+                    # Decode until we get the frame we want
                     frame = next(container.decode(video=0))
 
                     prefix = "mock" if mock_mode else "screenshot"
