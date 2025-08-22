@@ -4,46 +4,13 @@ import os
 import re
 import time
 import threading
-import uuid
-from multiprocessing import Process, Manager
+from multiprocessing import Process, Queue
 from queue import Empty
 
 from maga import Maga, get_metadata
-from screenshot_system.downloader import downloader_service_main
+from screenshot_system.downloader import Downloader
 from screenshot_system.orchestrator import create_screenshots_from_stream
 from screenshot_system.io_adapter import TorrentFileIO
-
-# --- Start of Centralized Downloader Components ---
-
-class ResultDispatcher:
-    def __init__(self, manager, result_queue):
-        self._map = manager.dict()
-        self._manager = manager
-        self.result_queue = result_queue
-        self.thread = threading.Thread(target=self.run, daemon=True)
-        self.thread.start()
-
-    def run(self):
-        while True:
-            try:
-                result = self.result_queue.get()
-                request_id = result.get('request_id')
-                if request_id in self._map:
-                    response_queue = self._map[request_id]
-                    response_queue.put(result)
-            except Exception:
-                pass
-
-    def add_request(self, request_id):
-        response_queue = self._manager.Queue(1)
-        self._map[request_id] = response_queue
-        return response_queue
-
-    def remove_request(self, request_id):
-        if request_id in self._map:
-            del self._map[request_id]
-
-# --- End of Centralized Downloader Components ---
 
 # --- Start of Classification System (Unchanged) ---
 CLASSIFICATION_RULES = {
@@ -64,12 +31,23 @@ def classify_torrent(name):
     return None
 # --- End of Classification System ---
 
-def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, task_queue, dispatcher, stats_queue):
+def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, stats_queue):
+    """
+    This process is self-contained. It creates its own downloader
+    and handles one torrent from start to finish.
+    """
+    print(f"[Worker:{os.getpid()}] Started for {infohash}")
+    downloader = Downloader()
     try:
-        io_adapter = TorrentFileIO(infohash, target_file_index, file_size, task_queue, dispatcher)
+        # The IO adapter uses the downloader owned by this process
+        io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
         create_screenshots_from_stream(io_adapter, infohash, stats_queue)
     except Exception as e:
         print(f"[Worker:{os.getpid()}] Unhandled error for {infohash}: {e}")
+    finally:
+        downloader.close_session()
+        print(f"[Worker:{os.getpid()}] Finished for {infohash}")
+
 
 def statistics_worker(queue):
     total_screenshots = 0
@@ -85,11 +63,9 @@ def statistics_worker(queue):
         print(f"[STATS] Last 60s: {period_screenshots} screenshots. Total: {total_screenshots} screenshots.")
 
 class Crawler(Maga):
-    def __init__(self, task_queue, dispatcher, stats_queue, *args, **kwargs):
+    def __init__(self, stats_queue, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.processed_infohashes = set()
-        self.task_queue = task_queue
-        self.dispatcher = dispatcher
         self.stats_queue = stats_queue
 
     async def handle_announce_peer(self, infohash, addr, peer_addr):
@@ -99,7 +75,8 @@ class Crawler(Maga):
         loop = asyncio.get_event_loop()
         try:
             metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
-        except Exception: return
+        except Exception:
+            return
         if not metadata: return
 
         torrent_name_bytes = metadata.get(b'name')
@@ -126,30 +103,22 @@ class Crawler(Maga):
 
         if target_file_index != -1:
             print(f"[Crawler] Handing off task for {infohash}")
-            p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, self.task_queue, self.dispatcher, self.stats_queue))
+            # Note: We now pass a regular multiprocessing.Queue for stats
+            p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, self.stats_queue))
             p.daemon = True
             p.start()
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
 
-    with Manager() as manager:
-        task_queue = manager.Queue()
-        result_queue = manager.Queue()
-        stats_queue = manager.Queue()
+    # A standard queue is sufficient for stats collection
+    stats_queue = Queue()
 
-        # 1. Start the result dispatcher thread
-        dispatcher = ResultDispatcher(manager, result_queue)
+    # Start statistics thread
+    stats_thread = threading.Thread(target=statistics_worker, args=(stats_queue,), daemon=True)
+    stats_thread.start()
 
-        # 2. Start the downloader service process
-        downloader_process = Process(target=downloader_service_main, args=(task_queue, result_queue), daemon=True)
-        downloader_process.start()
-
-        # 3. Start statistics thread
-        stats_thread = threading.Thread(target=statistics_worker, args=(stats_queue,), daemon=True)
-        stats_thread.start()
-
-        # 4. Start the crawler
-        print("[Main] Starting Crawler...")
-        crawler = Crawler(task_queue, dispatcher, stats_queue)
-        crawler.run(6881)
+    # Start the crawler
+    print("[Main] Starting Crawler...")
+    crawler = Crawler(stats_queue)
+    crawler.run(6881)

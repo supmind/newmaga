@@ -1,16 +1,11 @@
 import io
-import uuid
-from queue import Empty
 
 class TorrentFileIO(io.RawIOBase):
-    def __init__(self, infohash: str, file_index: int, file_size: int, task_queue, dispatcher):
+    def __init__(self, downloader, infohash: str, file_index: int, file_size: int):
+        self.downloader = downloader
         self.infohash = infohash
         self.file_index = file_index
         self.file_size = file_size
-
-        self.task_queue = task_queue
-        self.dispatcher = dispatcher
-
         self.pos = 0
 
     def readable(self):
@@ -20,7 +15,12 @@ class TorrentFileIO(io.RawIOBase):
         return True
 
     def seek(self, offset, whence=io.SEEK_SET):
-        self.pos = offset
+        if whence == io.SEEK_SET:
+            self.pos = offset
+        elif whence == io.SEEK_CUR:
+            self.pos += offset
+        elif whence == io.SEEK_END:
+            self.pos = self.file_size + offset
         return self.pos
 
     def tell(self):
@@ -37,37 +37,12 @@ class TorrentFileIO(io.RawIOBase):
         if read_size <= 0:
             return b''
 
-        request_id = uuid.uuid4().hex
-        response_queue = self.dispatcher.add_request(request_id)
-
-        task = {
-            'type': 'DOWNLOAD_RANGE',
-            'request_id': request_id,
-            'infohash': self.infohash,
-            'file_index': self.file_index,
-            'offset': self.pos,
-            'size': read_size,
-        }
-
-        self.task_queue.put(task)
-
-        data = b''
-        try:
-            result = response_queue.get(timeout=190)
-            error = result.get('error')
-            if error:
-                # Silently fail on this read
-                pass
-            else:
-                data = result.get('data', b'')
-        except Empty:
-            # Silently fail on timeout
-            pass
-        except Exception:
-            # Silently fail on other exceptions
-            pass
-        finally:
-            self.dispatcher.remove_request(request_id)
+        data = self.downloader.download_byte_range(
+            self.infohash,
+            self.file_index,
+            self.pos,
+            read_size
+        )
 
         if data:
             self.pos += len(data)
@@ -75,4 +50,6 @@ class TorrentFileIO(io.RawIOBase):
         return data
 
     def close(self):
+        # The downloader session is managed by the worker process,
+        # so we don't close it here.
         pass
