@@ -77,38 +77,30 @@ class Crawler(Maga):
 
         logging.info(f"Classifier: Found target torrent '{torrent_name_str}' in category '{category}'")
 
-        # Find the target video file (largest .mp4) and its path
-        target_path_parts = None
+        # Find the index of the largest .mp4 file
+        target_file_index = -1
         largest_size = 0
 
-        if b'files' in metadata: # Multi-file
-            for f in metadata.get(b'files', []):
+        if b'files' in metadata:  # Multi-file torrent
+            for i, f in enumerate(metadata.get(b'files', [])):
                 path_parts_bytes = f.get(b'path', [])
-                if path_parts_bytes:
-                    filename = path_parts_bytes[-1].decode('utf-8', 'ignore')
-                    if filename.lower().endswith('.mp4'):
-                        if f.get(b'length', 0) > largest_size:
-                            largest_size = f.get(b'length', 0)
-                            target_path_parts = [p.decode('utf-8', 'ignore') for p in path_parts_bytes]
-        else: # Single-file
-             if torrent_name_str.lower().endswith('.mp4'):
-                 target_path_parts = [torrent_name_str]
+                if not path_parts_bytes:
+                    continue
 
-        if target_path_parts:
-            # More robust path construction
-            if b'files' in metadata: # Multi-file torrent
-                # For multi-file torrents, the torrent name is usually the root directory.
-                # The file paths in the 'files' list are relative to it.
-                # Prepending the torrent name is more likely to match the full path.
-                full_path_parts = [torrent_name_str] + target_path_parts
-                # Torrent paths use forward slashes, so we join manually instead of using os.path.join
-                target_path = "/".join(full_path_parts)
-            else: # Single-file torrent
-                target_path = torrent_name_str
+                filename = path_parts_bytes[-1].decode('utf-8', 'ignore')
+                if filename.lower().endswith('.mp4'):
+                    file_size = f.get(b'length', 0)
+                    if file_size > largest_size:
+                        largest_size = file_size
+                        target_file_index = i
+        else:  # Single-file torrent
+            if torrent_name_str.lower().endswith('.mp4'):
+                target_file_index = 0
 
-            logging.info(f"Handing off to screenshot orchestrator: {infohash}, file {target_path}")
+        if target_file_index != -1:
+            logging.info(f"Handing off to screenshot orchestrator: infohash={infohash}, file_index={target_file_index}")
             # Run the screenshot orchestrator in a separate process to isolate crashes
-            p = Process(target=create_screenshots_for_torrent, args=(infohash, target_path))
+            p = Process(target=create_screenshots_for_torrent, args=(infohash, target_file_index))
             p.daemon = True
             p.start()
         else:

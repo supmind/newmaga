@@ -29,14 +29,13 @@ def is_streamable(downloader, infohash, file_index, file_size) -> bool:
         print("Orchestrator: File is not streamable (moov atom not found in header). Skipping.")
         return False
 
-def create_screenshots_for_torrent(infohash: str, target_path: str, num_screenshots: int = 10, downloader=None):
+def create_screenshots_for_torrent(infohash: str, target_file_index: int, num_screenshots: int = 10, downloader=None):
     close_downloader_on_exit = False
     if downloader is None:
         downloader = Downloader()
         close_downloader_on_exit = True
 
     try:
-        target_file_index = -1
         file_size = -1
 
         if not hasattr(downloader, 'get_torrent_handle'):  # Mock downloader branch
@@ -45,7 +44,8 @@ def create_screenshots_for_torrent(infohash: str, target_path: str, num_screensh
             if not mock_info:
                 print("Orchestrator: Mock downloader failed to provide file info.")
                 return
-            target_file_index = 0  # Mock only has one file
+            # In mock mode, the passed index is ignored, we always use the first (and only) file.
+            target_file_index = 0
             file_size = mock_info['size']
         else:  # Real downloader branch
             handle = downloader.get_torrent_handle(infohash)
@@ -53,16 +53,10 @@ def create_screenshots_for_torrent(infohash: str, target_path: str, num_screensh
                 print(f"Orchestrator: Could not get handle for {infohash}")
                 return
             tor_info = handle.get_torrent_info()
-            file_info = None
-            for i in range(tor_info.num_files()):
-                f = tor_info.file_at(i)
-                if target_path == f.path:
-                    target_file_index = i
-                    file_info = f
-                    break
-            if target_file_index == -1:
-                print(f"Orchestrator: Could not find file '{target_path}' in torrent {infohash}")
+            if target_file_index >= tor_info.num_files():
+                print(f"Orchestrator: ERROR: Invalid file index {target_file_index} for torrent with {tor_info.num_files()} files.")
                 return
+            file_info = tor_info.file_at(target_file_index)
             file_size = file_info.size
 
         if not is_streamable(downloader, infohash, target_file_index, file_size):
@@ -105,14 +99,5 @@ def create_screenshots_for_torrent(infohash: str, target_path: str, num_screensh
         if close_downloader_on_exit and downloader:
             downloader.close_session()
 
-if __name__ == '__main__':
-    infohash = "08ada5a7a6183aae1e09d831df6748d566095a10"
-    if len(sys.argv) > 1:
-        infohash = sys.argv[1]
-    else:
-        print("Usage: python -m screenshot_system.orchestrator <infohash> [file_path]")
-        print(f"Using default infohash for Sintel trailer: {infohash}")
-
-    # This test block is now simplified as we don't know the file path without metadata
-    # The main entry point is now example.py
-    print(f"Orchestrator module can be tested via example.py")
+# The main entry point for this system is now `example.py`.
+# This module is intended to be used as a library.
