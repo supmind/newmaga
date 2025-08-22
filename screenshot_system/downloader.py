@@ -4,15 +4,13 @@ import sys
 
 class Downloader:
     def __init__(self):
-        settings = {
-            # Set port to 0 to automatically pick a random available port.
-            # This is CRITICAL for running multiple downloaders in parallel to avoid port conflicts.
-            'listen_interfaces': '0.0.0.0:0',
-            'alert_mask': lt.alert_category.status | lt.alert_category.storage,
-            'enable_dht': True,
-            # Performance tuning: allow more connections
-            'connections_limit': 200,
-        }
+        # Apply libtorrent's high-performance seed settings preset
+        settings = lt.high_performance_seed()
+        # Customize the preset
+        settings['listen_interfaces'] = '0.0.0.0:0'
+        settings['alert_mask'] = lt.alert_category.status | lt.alert_category.storage
+        settings['connections_limit'] = 200
+
         self.ses = lt.session(settings)
         # Add more DHT routers for faster peer discovery
         self.ses.add_dht_router("router.utorrent.com", 6881)

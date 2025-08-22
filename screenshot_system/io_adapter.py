@@ -47,8 +47,6 @@ class TorrentFileIO(io.RawIOBase):
         # Ensure we don't read past the end of the file
         read_size = min(size, self.file_size - self.pos)
 
-        print(f"TorrentFileIO: Reading {read_size} bytes at offset {self.pos}")
-
         data = self.downloader.download_byte_range(
             self.infohash,
             self.file_index,
