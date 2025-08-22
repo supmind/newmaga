@@ -103,6 +103,12 @@ class Downloader:
                 print(status_line, end='\r')
                 last_status_print = time.time()
 
+                # state_index 4 is 'finished', 5 is 'seeding'. If libtorrent reports these states,
+                # we can assume the download is done even if we missed the piece_finished_alert.
+                if state_index in [4, 5]:
+                    print(f"\nDetected '{state}' status, breaking download wait loop.")
+                    break
+
             alerts = self._wait_for_alert(timeout=0.5)
             for alert in alerts:
                 if isinstance(alert, lt.piece_finished_alert):
