@@ -4,7 +4,9 @@ import logging
 import os
 import re
 from multiprocessing import Process
-from screenshot_system.orchestrator import create_screenshots_for_torrent
+from screenshot_system.orchestrator import create_screenshots_from_stream
+from screenshot_system.downloader import Downloader
+from screenshot_system.io_adapter import TorrentFileIO
 
 logging.basicConfig(level=logging.INFO)
 
@@ -13,9 +15,8 @@ logging.basicConfig(level=logging.INFO)
 CLASSIFICATION_RULES = {
     'japanese_av': {
         'type': 'hybrid',
-        # Stricter, case-sensitive regex for standard codes like 'ABC-123'
         'regex': r'\b[A-Z]+-\d+\b',
-        'keywords': ['jav', 'fc2'] # Keywords for other formats, checked case-insensitively
+        'keywords': ['jav', 'fc2']
     },
     'chinese_homemade': {
         'type': 'keywords',
@@ -33,10 +34,8 @@ def classify_torrent(name):
     for category, rule in CLASSIFICATION_RULES.items():
         rule_type = rule.get('type')
         if rule_type == 'hybrid':
-            # Regex for this rule is case-sensitive
             if re.search(rule['regex'], name):
                 return category
-            # Keywords are case-insensitive
             for word in rule['keywords']:
                 if word in name_lower:
                     return category
@@ -47,6 +46,39 @@ def classify_torrent(name):
     return None
 
 # --- End of Classification System ---
+
+def run_screenshot_task(infohash: str, target_file_index: int):
+    """
+    This function runs in a separate process.
+    It handles the entire lifecycle of downloading and screenshotting for one torrent.
+    """
+    downloader = Downloader()
+    try:
+        handle = downloader.get_torrent_handle(infohash)
+        if not handle:
+            logging.error(f"TASK {infohash}: Could not get handle.")
+            return
+
+        tor_info = handle.get_torrent_info()
+        if target_file_index >= tor_info.num_files():
+            logging.error(f"TASK {infohash}: Invalid file index {target_file_index} for torrent with {tor_info.num_files()} files.")
+            return
+
+        file_info = tor_info.file_at(target_file_index)
+        file_size = file_info.size
+
+        logging.info(f"TASK {infohash}: Creating stream for file '{file_info.path}' (index {target_file_index}, size {file_size})")
+
+        io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
+
+        # The orchestrator is now generic and just processes the stream
+        create_screenshots_from_stream(io_adapter)
+
+    except Exception as e:
+        logging.error(f"TASK {infohash}: An unexpected error occurred: {e}", exc_info=True)
+    finally:
+        downloader.close_session()
+        logging.info(f"TASK {infohash}: Process finished.")
 
 
 class Crawler(Maga):
@@ -59,7 +91,12 @@ class Crawler(Maga):
             return
 
         loop = asyncio.get_event_loop()
-        metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
+        try:
+            metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
+        except Exception:
+            # Malformed metadata can cause crashes in bdecode, ignore them
+            return
+
         if not metadata:
             return
 
@@ -98,14 +135,15 @@ class Crawler(Maga):
                 target_file_index = 0
 
         if target_file_index != -1:
-            logging.info(f"Handing off to screenshot orchestrator: infohash={infohash}, file_index={target_file_index}")
-            # Run the screenshot orchestrator in a separate process to isolate crashes
-            p = Process(target=create_screenshots_for_torrent, args=(infohash, target_file_index))
+            logging.info(f"Handing off to screenshot process: infohash={infohash}, file_index={target_file_index}")
+            # Run the screenshot task in a separate process to isolate crashes
+            p = Process(target=run_screenshot_task, args=(infohash, target_file_index))
             p.daemon = True
             p.start()
         else:
             logging.info(f"No .mp4 file found in torrent {infohash}")
 
 
-crawler = Crawler()
-crawler.run(6881)
+if __name__ == "__main__":
+    crawler = Crawler()
+    crawler.run(6881)

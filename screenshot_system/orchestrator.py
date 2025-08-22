@@ -1,91 +1,44 @@
 import av
 import os
-import sys
-import io
-from .downloader import Downloader
-from .io_adapter import TorrentFileIO
 from .video import get_video_duration
 
 os.makedirs('screenshots', exist_ok=True)
 
-def is_streamable(downloader, infohash, file_index, file_size) -> bool:
-    # This function is problematic for mocks and real scenarios.
-    # The real downloader is needed to get metadata, but for streaming, we might use a mock.
-    # For now, we'll assume the check is part of the orchestrator's role.
-    print("\nOrchestrator: Checking if file is streamable...")
-    header_size = 1 * 1024 * 1024  # 1MB is enough for headers
-    print(f"Orchestrator: Attempting to download header ({header_size} bytes)...")
-    header_data = downloader.download_byte_range(infohash, file_index, 0, min(header_size, file_size))
+def create_screenshots_from_stream(file_like_object, num_screenshots: int = 10, mock_mode=False):
+    """
+    Generates screenshots from a given file-like object that PyAV can read.
 
-    if not header_data or len(header_data) == 0:
-        print("Orchestrator: Could not download header to check for streamability.")
-        return False
-
-    duration = get_video_duration(header_data)
-    if duration > 0:
-        print(f"Orchestrator: File is streamable. Duration: {duration:.2f}s")
-        return True
-    else:
-        print("Orchestrator: File is not streamable (moov atom not found in header). Skipping.")
-        return False
-
-def create_screenshots_for_torrent(infohash: str, target_file_index: int, num_screenshots: int = 10, downloader=None):
-    close_downloader_on_exit = False
-    if downloader is None:
-        downloader = Downloader()
-        close_downloader_on_exit = True
-
+    :param file_like_object: A readable, seekable file-like object.
+    :param num_screenshots: The number of screenshots to generate.
+    :param mock_mode: If true, uses a generic prefix for screenshot names.
+    """
+    print("Orchestrator: Proceeding with screenshot generation from stream...")
     try:
-        file_size = -1
-
-        if not hasattr(downloader, 'get_torrent_handle'):  # Mock downloader branch
-            print("Orchestrator: Using mock downloader. Bypassing torrent metadata lookup.")
-            mock_info = downloader.get_file_info()
-            if not mock_info:
-                print("Orchestrator: Mock downloader failed to provide file info.")
-                return
-            # In mock mode, the passed index is ignored, we always use the first (and only) file.
-            target_file_index = 0
-            file_size = mock_info['size']
-        else:  # Real downloader branch
-            handle = downloader.get_torrent_handle(infohash)
-            if not handle:
-                print(f"Orchestrator: Could not get handle for {infohash}")
-                return
-            tor_info = handle.get_torrent_info()
-            if target_file_index >= tor_info.num_files():
-                print(f"Orchestrator: ERROR: Invalid file index {target_file_index} for torrent with {tor_info.num_files()} files.")
-                return
-            file_info = tor_info.file_at(target_file_index)
-            file_size = file_info.size
-
-        if not is_streamable(downloader, infohash, target_file_index, file_size):
-            # For a mock downloader, this check might be less meaningful but we keep it for API consistency
-            return
-
-        print("Orchestrator: Proceeding with screenshot generation...")
         # The TorrentFileIO object acts as a file-like object for PyAV.
         # When PyAV seeks and reads to decode a frame, it calls the `read()` method
         # on the IO adapter, which in turn calls our downloader to fetch
         # the required byte range from the torrent on-demand.
-        io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
+        with av.open(file_like_object, "r") as container:
+            print("Orchestrator: Successfully opened stream with PyAV.")
+            # Some streams might not have a duration, handle this gracefully.
+            if container.duration is None:
+                print("Orchestrator: ERROR: Could not determine stream duration.")
+                return
 
-        with av.open(io_adapter, "r") as container:
-            print("Orchestrator: Successfully opened torrent stream with PyAV via IO adapter.")
             duration_sec = container.duration / av.time_base
 
             for i in range(num_screenshots):
                 timestamp_sec = (duration_sec / (num_screenshots + 1)) * (i + 1)
                 try:
                     print(f"Orchestrator: Seeking to {timestamp_sec:.2f} seconds...")
-                    # When using custom IO, seek might not support all arguments.
                     # We seek to the timestamp in the container's time_base.
                     seek_target = int(timestamp_sec * av.time_base)
                     container.seek(seek_target, backward=True, any_frame=True)
+
                     frame = next(container.decode(video=0))
-                    # Use a more descriptive filename for mock tests
-                    mock_prefix = "mock" if hasattr(downloader, 'video_path') else infohash
-                    output_filename = f"screenshots/{mock_prefix}_{int(timestamp_sec)}.jpg"
+
+                    prefix = "mock" if mock_mode else "screenshot"
+                    output_filename = f"screenshots/{prefix}_{int(timestamp_sec)}.jpg"
                     frame.to_image().save(output_filename)
                     print(f"Orchestrator: Saved screenshot to {output_filename}")
                 except StopIteration:
@@ -95,9 +48,6 @@ def create_screenshots_for_torrent(infohash: str, target_file_index: int, num_sc
 
     except Exception as e:
         print(f"An error occurred in the orchestrator: {e}")
-    finally:
-        if close_downloader_on_exit and downloader:
-            downloader.close_session()
 
 # The main entry point for this system is now `example.py`.
 # This module is intended to be used as a library.
