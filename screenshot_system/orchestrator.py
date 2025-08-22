@@ -1,5 +1,6 @@
 import av
 import os
+import traceback
 from .video import get_video_duration
 
 os.makedirs('screenshots', exist_ok=True)
@@ -7,56 +8,62 @@ os.makedirs('screenshots', exist_ok=True)
 def create_screenshots_from_stream(file_like_object, num_screenshots: int = 20, mock_mode=False):
     """
     Generates screenshots from a given file-like object that PyAV can read.
-
-    :param file_like_object: A readable, seekable file-like object.
-    :param num_screenshots: The number of screenshots to generate.
-    :param mock_mode: If true, uses a generic prefix for screenshot names.
     """
-    print("Orchestrator: Proceeding with screenshot generation from stream...")
+    container = None
     try:
-        # The TorrentFileIO object acts as a file-like object for PyAV.
-        # When PyAV seeks and reads to decode a frame, it calls the `read()` method
-        # on the IO adapter, which in turn calls our downloader to fetch
-        # the required byte range from the torrent on-demand.
-        with av.open(file_like_object, "r") as container:
-            print("Orchestrator: Successfully opened stream with PyAV.")
+        print("Orchestrator: Attempting to open stream with PyAV...")
+        container = av.open(file_like_object, "r")
+        print("Orchestrator: Successfully opened stream with PyAV.")
 
-            # Check if there are any video streams available.
-            if not container.streams.video:
-                print("Orchestrator: ERROR: No video streams found in the file.")
-                return
+        # Check if there are any video streams available.
+        if not container.streams.video:
+            print("Orchestrator: ERROR: No video streams found in the file.")
+            return
 
-            # Some streams might not have a duration, handle this gracefully.
-            if container.duration is None:
-                print("Orchestrator: ERROR: Could not determine stream duration.")
-                return
+        video_stream = container.streams.video[0]
 
-            duration_sec = container.duration / av.time_base
+        # Some streams might not have a duration, handle this gracefully.
+        if container.duration is None:
+            print("Orchestrator: ERROR: Could not determine stream duration.")
+            return
 
-            for i in range(num_screenshots):
-                timestamp_sec = (duration_sec / (num_screenshots + 1)) * (i + 1)
-                try:
-                    print(f"Orchestrator: Seeking to {timestamp_sec:.2f} seconds...")
-                    # We seek to the timestamp in the container's time_base.
-                    seek_target = int(timestamp_sec * av.time_base)
-                    # Seek to the nearest keyframe before the target timestamp.
-                    # 'any_frame=False' is crucial for performance.
-                    container.seek(seek_target, backward=True, any_frame=False, stream=container.streams.video[0])
+        duration_sec = container.duration / av.time_base
 
-                    # Decode until we get the frame we want
-                    frame = next(container.decode(video=0))
+        for i in range(num_screenshots):
+            timestamp_sec = (duration_sec / (num_screenshots + 1)) * (i + 1)
+            try:
+                print(f"Orchestrator: Processing timestamp {timestamp_sec:.2f}s...")
 
-                    prefix = "mock" if mock_mode else "screenshot"
-                    output_filename = f"screenshots/{prefix}_{int(timestamp_sec)}.jpg"
-                    frame.to_image().save(output_filename)
-                    print(f"Orchestrator: Saved screenshot to {output_filename}")
-                except StopIteration:
-                    print(f"Orchestrator: Could not decode frame at {timestamp_sec:.2f}s. Reached end of stream?")
-                except Exception as e:
-                    print(f"Orchestrator: Failed to generate screenshot at {timestamp_sec:.2f}s: {e}")
+                # We seek to the timestamp in the container's time_base.
+                seek_target = int(timestamp_sec * av.time_base)
+
+                print(f"  - Seeking to {seek_target}...")
+                container.seek(seek_target, backward=True, any_frame=False, stream=video_stream)
+
+                print(f"  - Decoding frame...")
+                frame = next(container.decode(video=0))
+
+                print(f"  - Saving frame to image...")
+                prefix = "mock" if mock_mode else "screenshot"
+                output_filename = f"screenshots/{prefix}_{int(timestamp_sec)}.jpg"
+                frame.to_image().save(output_filename)
+
+                print(f"Orchestrator: Saved screenshot to {output_filename}")
+
+            except StopIteration:
+                print(f"Orchestrator: WARNING: Could not decode frame at {timestamp_sec:.2f}s. Reached end of stream?")
+                break # No more frames to decode
+            except Exception as e:
+                print(f"Orchestrator: ERROR: Failed to generate screenshot at {timestamp_sec:.2f}s.")
+                print("--- DETAILED ERROR ---")
+                traceback.print_exc()
+                print("----------------------")
 
     except Exception as e:
-        print(f"An error occurred in the orchestrator: {e}")
-
-# The main entry point for this system is now `example.py`.
-# This module is intended to be used as a library.
+        print("Orchestrator: FATAL: An unexpected error occurred in the orchestrator.")
+        print("--- DETAILED ERROR ---")
+        traceback.print_exc()
+        print("----------------------")
+    finally:
+        if container:
+            container.close()
