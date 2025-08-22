@@ -60,14 +60,29 @@ class Crawler(Maga):
 
         torrent_name_str = torrent_name_bytes.decode('utf-8', 'ignore')
 
-        # Classify the torrent
+        # 1. Classify the torrent
         category = classify_torrent(torrent_name_str)
-
-        # Only log torrents that are classified
         if not category:
             return
 
-        # Log the information
+        # 2. Check for .mp4 files
+        has_mp4 = False
+        if b'files' in metadata:  # Multi-file
+            for f in metadata[b'files']:
+                path_parts = f.get(b'path')
+                if path_parts:
+                    filename = path_parts[-1].decode('utf-8', 'ignore')
+                    if filename.lower().endswith('.mp4'):
+                        has_mp4 = True
+                        break
+        else:  # Single-file
+            if torrent_name_str.lower().endswith('.mp4'):
+                has_mp4 = True
+
+        if not has_mp4:
+            return
+
+        # 3. If all filters pass, log the information
         logging.info("Successfully downloaded metadata for infohash: %s", infohash)
         logging.info(f"Torrent Name: {torrent_name_str}")
         logging.info(f"Category: {category}")
