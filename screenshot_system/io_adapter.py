@@ -1,15 +1,15 @@
 import io
 import uuid
-from queue import Empty
+from queue import Queue, Empty
 
 class TorrentFileIO(io.RawIOBase):
-    def __init__(self, infohash: str, file_index: int, file_size: int, task_queue, result_dispatcher):
+    def __init__(self, infohash: str, file_index: int, file_size: int, task_queue, dispatcher):
         self.infohash = infohash
         self.file_index = file_index
         self.file_size = file_size
 
         self.task_queue = task_queue
-        self.dispatcher = result_dispatcher
+        self.dispatcher = dispatcher
 
         self.pos = 0
 
@@ -49,19 +49,16 @@ class TorrentFileIO(io.RawIOBase):
             'size': read_size,
         }
 
-        print(f"[IOAdapter] Sending request {request_id} for {read_size} bytes at offset {self.pos}")
         self.task_queue.put(task)
 
         data = b''
         try:
-            # Block and wait for the result from the downloader service via the dispatcher
-            result = response_queue.get(timeout=190) # 3 min timeout + buffer
+            result = response_queue.get(timeout=190)
             error = result.get('error')
             if error:
-                print(f"[IOAdapter] Request {request_id} failed with error: {error}")
+                print(f"[IOAdapter] Request {request_id} failed: {error}")
             else:
                 data = result.get('data', b'')
-                print(f"[IOAdapter] Request {request_id} received {len(data)} bytes.")
         except Empty:
             print(f"[IOAdapter] Request {request_id} timed out.")
         except Exception as e:
