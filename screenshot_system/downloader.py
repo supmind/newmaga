@@ -105,7 +105,7 @@ class Downloader:
                 if isinstance(alert, lt.read_piece_alert):
                     if alert.piece in expected_pieces_to_read:
                         print(f"Read data for piece {alert.piece} (size: {len(alert.buffer)})")
-                        downloaded_data[alert.piece] = alert.buffer
+                        downloaded_data[alert.piece] = bytes(alert.buffer)
                         expected_pieces_to_read.remove(alert.piece)
 
         # De-prioritize pieces
