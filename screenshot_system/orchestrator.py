@@ -20,6 +20,12 @@ def create_screenshots_from_stream(file_like_object, num_screenshots: int = 20, 
         # the required byte range from the torrent on-demand.
         with av.open(file_like_object, "r") as container:
             print("Orchestrator: Successfully opened stream with PyAV.")
+
+            # Check if there are any video streams available.
+            if not container.streams.video:
+                print("Orchestrator: ERROR: No video streams found in the file.")
+                return
+
             # Some streams might not have a duration, handle this gracefully.
             if container.duration is None:
                 print("Orchestrator: ERROR: Could not determine stream duration.")
