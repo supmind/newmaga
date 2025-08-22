@@ -15,31 +15,33 @@ from screenshot_system.io_adapter import TorrentFileIO
 
 # --- Start of Centralized Downloader Components ---
 
-def result_dispatcher_main(result_queue, pending_requests_map):
-    """Entry point for the result dispatcher thread."""
-    while True:
-        try:
-            result = result_queue.get()
-            request_id = result.get('request_id')
-            if request_id in pending_requests_map:
-                response_queue = pending_requests_map[request_id]
-                response_queue.put(result)
-        except Exception as e:
-            print(f"[Dispatcher] Error: {e}")
-
-class PendingRequestManager:
-    def __init__(self, manager):
-        self._map = manager.dict()
+class ResultDispatcher:
+    def __init__(self, manager, result_queue):
+        self.result_queue = result_queue
+        self.pending_requests = manager.dict()
         self.manager = manager
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        while True:
+            try:
+                result = self.result_queue.get()
+                request_id = result.get('request_id')
+                if request_id in self.pending_requests:
+                    response_queue = self.pending_requests[request_id]
+                    response_queue.put(result)
+            except Exception as e:
+                print(f"[Dispatcher] Error: {e}")
 
     def add_request(self, request_id):
         response_queue = self.manager.Queue(1)
-        self._map[request_id] = response_queue
+        self.pending_requests[request_id] = response_queue
         return response_queue
 
     def remove_request(self, request_id):
-        if request_id in self._map:
-            del self._map[request_id]
+        if request_id in self.pending_requests:
+            del self.pending_requests[request_id]
 
 # --- End of Centralized Downloader Components ---
 
@@ -97,7 +99,6 @@ class Crawler(Maga):
         if infohash in self.processed_infohashes:
             return
 
-        # Add infohash to set early to prevent re-processing
         self.processed_infohashes.add(infohash)
         print(f"[Crawler] New infohash found: {infohash}. Trying to get metadata from {peer_addr}.")
 
@@ -120,7 +121,6 @@ class Crawler(Maga):
         torrent_name_str = torrent_name_bytes.decode('utf-8', 'ignore')
         category = classify_torrent(torrent_name_str)
         if not category:
-            # This is very common, so we don't log it to avoid spam
             return
 
         print(f"[Crawler] Found classified torrent: '{torrent_name_str}' in category '{category}'")
@@ -150,7 +150,7 @@ class Crawler(Maga):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.WARNING) # Further reduce log spam
+    logging.basicConfig(level=logging.WARNING)
 
     with Manager() as manager:
         task_queue = manager.Queue()
