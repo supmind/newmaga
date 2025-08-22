@@ -2,10 +2,18 @@ import libtorrent as lt
 import time
 from queue import Empty
 
+def downloader_service_main(task_queue, result_queue):
+    """
+    The main entry point for the downloader process.
+    Creates and runs the service.
+    """
+    service = DownloaderService()
+    service.run(task_queue, result_queue)
+
 class DownloaderService:
     def __init__(self):
         settings = lt.high_performance_seed()
-        settings['listen_interfaces'] = '0.0.0.0:6881'
+        settings['listen_interfaces'] = '0.0.0.0:0' # Use random port to avoid conflict
         settings['alert_mask'] = (
             lt.alert_category.status |
             lt.alert_category.storage |
@@ -17,61 +25,95 @@ class DownloaderService:
         self.ses.add_dht_router("dht.transmissionbt.com", 6881)
 
         self.handles = {}
-        self.active_reads = {} # piece_hash -> list of request_ids
 
     def get_or_add_handle(self, infohash):
         if infohash in self.handles:
-            return self.handles.get(infohash)
+            handle = self.handles.get(infohash)
+            if handle and handle.is_valid():
+                return handle
 
         magnet_link = f"magnet:?xt=urn:btih:{infohash}"
         params = {'save_path': '/tmp/', 'storage_mode': lt.storage_mode_t(2)}
         handle = self.ses.add_magnet_uri(magnet_link, params)
         self.handles[infohash] = handle
-        return handle
 
-    def process_alerts(self, result_queue):
-        alerts = self.ses.pop_alerts()
-        for alert in alerts:
-            if isinstance(alert, lt.read_piece_alert):
-                request_id = alert.user_data
-                result_queue.put({'request_id': request_id, 'data': bytes(alert.buffer), 'piece': alert.piece})
-            elif isinstance(alert, lt.torrent_error_alert):
-                print(f"[DownloaderService] Torrent Error: {alert.error.message()}")
+        # Wait for metadata
+        meta_start_time = time.time()
+        while not handle.has_metadata():
+            self.ses.wait_for_alert(1000)
+            if time.time() - meta_start_time > 60: # 1 min timeout for metadata
+                print(f"[DownloaderService] Timeout getting metadata for {infohash}")
+                return None
+        return handle
 
     def run(self, task_queue, result_queue):
         print("[DownloaderService] Started.")
         while True:
             try:
-                task = task_queue.get(timeout=0.2)
-                task_type = task.get('type')
+                task = task_queue.get()
+                request_id = task.get('request_id')
+                infohash = task.get('infohash')
 
-                if task_type == 'DOWNLOAD_RANGE':
-                    request_id = task['request_id']
-                    infohash = task['infohash']
-                    handle = self.get_or_add_handle(infohash)
+                handle = self.get_or_add_handle(infohash)
+                if not handle:
+                    result_queue.put({'request_id': request_id, 'error': 'Could not get handle'})
+                    continue
 
-                    if not handle or not handle.is_valid():
-                        result_queue.put({'request_id': request_id, 'error': 'Invalid handle'})
-                        continue
+                ti = handle.torrent_file()
+                piece_size = ti.piece_length()
+                file_offset = ti.files().file_offset(task['file_index'])
+                abs_offset = file_offset + task['offset']
 
-                    if not handle.has_metadata():
-                        task_queue.put(task) # Re-queue
-                        continue
+                start_piece, _ = divmod(abs_offset, piece_size)
+                end_piece, _ = divmod(abs_offset + task['size'] - 1, piece_size)
 
-                    ti = handle.torrent_file()
-                    piece_size = ti.piece_length()
-                    file_offset = ti.files().file_offset(task['file_index'])
-                    abs_offset = file_offset + task['offset']
+                pieces_needed = set(range(start_piece, end_piece + 1))
 
-                    start_piece, _ = divmod(abs_offset, piece_size)
-                    end_piece, _ = divmod(abs_offset + task['size'] - 1, piece_size)
+                for p_idx in pieces_needed:
+                    handle.piece_priority(p_idx, 7)
 
-                    for p_idx in range(start_piece, end_piece + 1):
-                        # The user_data field is used to associate the alert with our request_id
-                        handle.read_piece(p_idx, request_id)
+                # Blocking wait for this request's pieces
+                download_start_time = time.time()
+                pieces_done = set()
+                while pieces_done != pieces_needed:
+                    if time.time() - download_start_time > 180: # 3 min timeout per request
+                        print(f"[DownloaderService] Timeout downloading range for {infohash}")
+                        break
+
+                    alerts = self.ses.pop_alerts()
+                    for alert in alerts:
+                        if isinstance(alert, lt.piece_finished_alert):
+                            if alert.piece_index in pieces_needed:
+                                pieces_done.add(alert.piece_index)
+
+                if pieces_done != pieces_needed:
+                    result_queue.put({'request_id': request_id, 'error': 'Download timeout'})
+                    continue
+
+                # All pieces are downloaded, now read them
+                all_data = {}
+                for piece_index in sorted(list(pieces_needed)):
+                    handle.read_piece(piece_index)
+                    alert = self.ses.wait_for_alert(10000)
+                    if isinstance(alert, lt.read_piece_alert) and alert.piece == piece_index:
+                         all_data[piece_index] = bytes(alert.buffer)
+                    else:
+                        all_data = None
+                        break
+
+                if all_data is None:
+                    result_queue.put({'request_id': request_id, 'error': 'Failed to read pieces'})
+                    continue
+
+                full_chunk = b"".join(all_data[i] for i in sorted(all_data))
+                p_offset = start_piece * piece_size
+                start = abs_offset - p_offset
+                end = start + task['size']
+                data = full_chunk[start:end]
+
+                result_queue.put({'request_id': request_id, 'data': data})
 
             except Empty:
-                pass
-
-            self.ses.post_torrent_updates()
-            self.process_alerts(result_queue)
+                self.ses.post_torrent_updates()
+            except Exception as e:
+                print(f"[DownloaderService] Unhandled error: {e}")

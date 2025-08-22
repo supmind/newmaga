@@ -1,16 +1,14 @@
 import io
 import uuid
-from queue import Empty
 
 class TorrentFileIO(io.RawIOBase):
-    def __init__(self, infohash: str, file_index: int, file_size: int, task_queue, pending_requests_map, manager):
+    def __init__(self, infohash: str, file_index: int, file_size: int, task_queue, result_dispatcher):
         self.infohash = infohash
         self.file_index = file_index
         self.file_size = file_size
 
         self.task_queue = task_queue
-        self.pending_requests = pending_requests_map
-        self.manager = manager
+        self.dispatcher = result_dispatcher
 
         self.pos = 0
 
@@ -44,8 +42,7 @@ class TorrentFileIO(io.RawIOBase):
             return b''
 
         request_id = uuid.uuid4().hex
-        response_queue = self.manager.Queue(1)
-        self.pending_requests[request_id] = response_queue
+        response_queue = self.dispatcher.add_request(request_id)
 
         task = {
             'type': 'DOWNLOAD_RANGE',
@@ -60,16 +57,12 @@ class TorrentFileIO(io.RawIOBase):
 
         try:
             # Block and wait for the result from the downloader service via the dispatcher
-            result = response_queue.get(timeout=180)
+            result = response_queue.get(timeout=190) # 3 min timeout + buffer
             data = result.get('data', b'')
-        except Empty:
-            data = b''
         except Exception:
             data = b''
         finally:
-            # Clean up the map
-            if request_id in self.pending_requests:
-                del self.pending_requests[request_id]
+            self.dispatcher.remove_request(request_id)
 
         if data:
             self.pos += len(data)

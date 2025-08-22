@@ -9,29 +9,39 @@ from multiprocessing import Process, Manager
 from queue import Empty
 
 from maga import Maga, get_metadata
-from screenshot_system.downloader import DownloaderService
+from screenshot_system.downloader import downloader_service_main
 from screenshot_system.orchestrator import create_screenshots_from_stream
 from screenshot_system.io_adapter import TorrentFileIO
 
 # --- Start of Centralized Downloader Components ---
 
-def downloader_service_main(task_queue, result_queue):
-    """Entry point for the downloader service process."""
-    service = DownloaderService()
-    service.run(task_queue, result_queue)
+class ResultDispatcher:
+    def __init__(self, manager, result_queue):
+        self.result_queue = result_queue
+        self.pending_requests = manager.dict()
+        self.manager = manager
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
 
-def result_dispatcher_main(result_queue, pending_requests_map):
-    """Entry point for the result dispatcher thread."""
-    while True:
-        try:
-            result = result_queue.get()
-            request_id = result.get('request_id')
-            if request_id in pending_requests_map:
-                response_queue = pending_requests_map[request_id]
-                response_queue.put(result)
-        except Exception:
-            # Should not happen in a simple dispatcher
-            pass
+    def run(self):
+        while True:
+            try:
+                result = self.result_queue.get()
+                request_id = result.get('request_id')
+                if request_id in self.pending_requests:
+                    response_queue = self.pending_requests[request_id]
+                    response_queue.put(result)
+            except Exception:
+                pass
+
+    def add_request(self, request_id):
+        response_queue = self.manager.Queue(1)
+        self.pending_requests[request_id] = response_queue
+        return response_queue
+
+    def remove_request(self, request_id):
+        if request_id in self.pending_requests:
+            del self.pending_requests[request_id]
 
 # --- End of Centralized Downloader Components ---
 
@@ -54,11 +64,10 @@ def classify_torrent(name):
     return None
 # --- End of Classification System ---
 
-def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, task_queue, pending_requests_map, manager, stats_queue):
+def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, task_queue, result_dispatcher, stats_queue):
     try:
-        io_adapter = TorrentFileIO(infohash, target_file_index, file_size, task_queue, pending_requests_map, manager)
-        # We now use a simplified orchestrator that just needs the IO adapter and infohash
-        create_screenshots_from_stream(io_adapter, infohash, stats_queue)
+        io_adapter = TorrentFileIO(infohash, target_file_index, file_size, task_queue, result_dispatcher)
+        create_screenshots_from_stream(io_adapter, infohash, stats_queue, num_screenshots=20)
     except Exception as e:
         print(f"Error in screenshot task for {infohash}: {e}")
 
@@ -76,19 +85,18 @@ def statistics_worker(queue):
         print(f"[STATS] Last 60s: {period_screenshots} screenshots. Total: {total_screenshots} screenshots.")
 
 class Crawler(Maga):
-    def __init__(self, task_queue, pending_requests_map, manager, stats_queue, *args, **kwargs):
+    def __init__(self, task_queue, result_dispatcher, stats_queue, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.processed_infohashes = set()
         self.task_queue = task_queue
-        self.pending_requests_map = pending_requests_map
-        self.manager = manager
+        self.dispatcher = result_dispatcher
         self.stats_queue = stats_queue
 
     async def handle_announce_peer(self, infohash, addr, peer_addr):
         if infohash in self.processed_infohashes: return
         loop = asyncio.get_event_loop()
         try:
-            metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
+            metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop, loop_interval=0)
         except Exception: return
         if not metadata: return
         self.processed_infohashes.add(infohash)
@@ -113,32 +121,29 @@ class Crawler(Maga):
                 largest_size, target_file_index = metadata.get(b'length', 0), 0
 
         if target_file_index != -1:
-            p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, self.task_queue, self.pending_requests_map, self.manager, self.stats_queue))
+            p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, self.task_queue, self.dispatcher, self.stats_queue))
             p.daemon = True
             p.start()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    logging.getLogger('maga').setLevel(logging.WARNING)
+    logging.basicConfig(level=logging.WARNING)
 
     with Manager() as manager:
         task_queue = manager.Queue()
         result_queue = manager.Queue()
-        pending_requests_map = manager.dict()
         stats_queue = manager.Queue()
 
-        # 1. Start the downloader service process
+        # 1. Start the result dispatcher thread
+        dispatcher = ResultDispatcher(manager, result_queue)
+
+        # 2. Start the downloader service process
         downloader_process = Process(target=downloader_service_main, args=(task_queue, result_queue), daemon=True)
         downloader_process.start()
-
-        # 2. Start the result dispatcher thread
-        dispatcher_thread = threading.Thread(target=result_dispatcher_main, args=(result_queue, pending_requests_map), daemon=True)
-        dispatcher_thread.start()
 
         # 3. Start statistics thread
         stats_thread = threading.Thread(target=statistics_worker, args=(stats_queue,), daemon=True)
         stats_thread.start()
 
         # 4. Start the crawler
-        crawler = Crawler(task_queue, pending_requests_map, manager, stats_queue)
+        crawler = Crawler(task_queue, dispatcher, stats_queue)
         crawler.run(6881)
