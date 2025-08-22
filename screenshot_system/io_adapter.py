@@ -1,5 +1,6 @@
 import io
 import uuid
+from queue import Empty
 
 class TorrentFileIO(io.RawIOBase):
     def __init__(self, infohash: str, file_index: int, file_size: int, task_queue, result_dispatcher):
@@ -19,12 +20,7 @@ class TorrentFileIO(io.RawIOBase):
         return True
 
     def seek(self, offset, whence=io.SEEK_SET):
-        if whence == io.SEEK_SET:
-            self.pos = offset
-        elif whence == io.SEEK_CUR:
-            self.pos += offset
-        elif whence == io.SEEK_END:
-            self.pos = self.file_size + offset
+        self.pos = offset
         return self.pos
 
     def tell(self):
@@ -53,14 +49,23 @@ class TorrentFileIO(io.RawIOBase):
             'size': read_size,
         }
 
+        print(f"[IOAdapter] Sending request {request_id} for {read_size} bytes at offset {self.pos}")
         self.task_queue.put(task)
 
+        data = b''
         try:
             # Block and wait for the result from the downloader service via the dispatcher
             result = response_queue.get(timeout=190) # 3 min timeout + buffer
-            data = result.get('data', b'')
-        except Exception:
-            data = b''
+            error = result.get('error')
+            if error:
+                print(f"[IOAdapter] Request {request_id} failed with error: {error}")
+            else:
+                data = result.get('data', b'')
+                print(f"[IOAdapter] Request {request_id} received {len(data)} bytes.")
+        except Empty:
+            print(f"[IOAdapter] Request {request_id} timed out.")
+        except Exception as e:
+            print(f"[IOAdapter] Request {request_id} failed with exception: {e}")
         finally:
             self.dispatcher.remove_request(request_id)
 

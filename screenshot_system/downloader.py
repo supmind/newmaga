@@ -32,6 +32,7 @@ class DownloaderService:
             if handle and handle.is_valid():
                 return handle
 
+        print(f"[Downloader] Adding new torrent: {infohash}")
         magnet_link = f"magnet:?xt=urn:btih:{infohash}"
         params = {'save_path': '/tmp/', 'storage_mode': lt.storage_mode_t(2)}
         handle = self.ses.add_magnet_uri(magnet_link, params)
@@ -40,19 +41,21 @@ class DownloaderService:
         # Wait for metadata
         meta_start_time = time.time()
         while not handle.has_metadata():
-            self.ses.wait_for_alert(1000)
+            self.ses.wait_for_alert(500)
             if time.time() - meta_start_time > 60: # 1 min timeout for metadata
-                print(f"[DownloaderService] Timeout getting metadata for {infohash}")
+                print(f"[Downloader] Timeout getting metadata for {infohash}")
                 return None
+        print(f"[Downloader] Metadata received for {infohash}")
         return handle
 
     def run(self, task_queue, result_queue):
         print("[DownloaderService] Started.")
         while True:
             try:
-                task = task_queue.get()
+                task = task_queue.get(timeout=0.2)
                 request_id = task.get('request_id')
                 infohash = task.get('infohash')
+                print(f"[Downloader] Received task {request_id} for {infohash}")
 
                 handle = self.get_or_add_handle(infohash)
                 if not handle:
@@ -68,6 +71,7 @@ class DownloaderService:
                 end_piece, _ = divmod(abs_offset + task['size'] - 1, piece_size)
 
                 pieces_needed = set(range(start_piece, end_piece + 1))
+                print(f"[Downloader] Request {request_id}: requires pieces {start_piece}-{end_piece}")
 
                 for p_idx in pieces_needed:
                     handle.piece_priority(p_idx, 7)
@@ -77,7 +81,7 @@ class DownloaderService:
                 pieces_done = set()
                 while pieces_done != pieces_needed:
                     if time.time() - download_start_time > 180: # 3 min timeout per request
-                        print(f"[DownloaderService] Timeout downloading range for {infohash}")
+                        print(f"[Downloader] Timeout downloading range for {infohash} (req: {request_id})")
                         break
 
                     alerts = self.ses.pop_alerts()
@@ -91,6 +95,7 @@ class DownloaderService:
                     continue
 
                 # All pieces are downloaded, now read them
+                print(f"[Downloader] Request {request_id}: All pieces downloaded. Reading from cache...")
                 all_data = {}
                 for piece_index in sorted(list(pieces_needed)):
                     handle.read_piece(piece_index)
@@ -111,6 +116,7 @@ class DownloaderService:
                 end = start + task['size']
                 data = full_chunk[start:end]
 
+                print(f"[Downloader] Request {request_id}: Sending {len(data)} bytes back.")
                 result_queue.put({'request_id': request_id, 'data': data})
 
             except Empty:

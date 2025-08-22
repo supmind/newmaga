@@ -31,8 +31,8 @@ class ResultDispatcher:
                 if request_id in self.pending_requests:
                     response_queue = self.pending_requests[request_id]
                     response_queue.put(result)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[Dispatcher] Error: {e}")
 
     def add_request(self, request_id):
         response_queue = self.manager.Queue(1)
@@ -65,11 +65,14 @@ def classify_torrent(name):
 # --- End of Classification System ---
 
 def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, task_queue, result_dispatcher, stats_queue):
+    print(f"[Worker:{os.getpid()}] Started for {infohash}")
     try:
         io_adapter = TorrentFileIO(infohash, target_file_index, file_size, task_queue, result_dispatcher)
         create_screenshots_from_stream(io_adapter, infohash, stats_queue, num_screenshots=20)
     except Exception as e:
-        print(f"Error in screenshot task for {infohash}: {e}")
+        print(f"[Worker:{os.getpid()}] Error for {infohash}: {e}")
+    print(f"[Worker:{os.getpid()}] Finished for {infohash}")
+
 
 def statistics_worker(queue):
     total_screenshots = 0
@@ -94,16 +97,20 @@ class Crawler(Maga):
 
     async def handle_announce_peer(self, infohash, addr, peer_addr):
         if infohash in self.processed_infohashes: return
+        self.processed_infohashes.add(infohash)
+
         loop = asyncio.get_event_loop()
         try:
             metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop, loop_interval=0)
         except Exception: return
         if not metadata: return
-        self.processed_infohashes.add(infohash)
+
         torrent_name_bytes = metadata.get(b'name')
         if not torrent_name_bytes: return
         torrent_name_str = torrent_name_bytes.decode('utf-8', 'ignore')
         if not classify_torrent(torrent_name_str): return
+
+        print(f"[Crawler] Found classified torrent: {torrent_name_str}")
 
         target_file_index, largest_size = -1, 0
         files_metadata = metadata.get(b'files')
@@ -121,12 +128,15 @@ class Crawler(Maga):
                 largest_size, target_file_index = metadata.get(b'length', 0), 0
 
         if target_file_index != -1:
+            print(f"[Crawler] Handing off task for {infohash} (file index: {target_file_index})")
             p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, self.task_queue, self.dispatcher, self.stats_queue))
             p.daemon = True
             p.start()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.WARNING)
+    # Set a higher log level for maga to reduce its noise
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger('maga').setLevel(logging.ERROR)
 
     with Manager() as manager:
         task_queue = manager.Queue()
@@ -145,5 +155,6 @@ if __name__ == "__main__":
         stats_thread.start()
 
         # 4. Start the crawler
+        print("[Main] Starting Crawler...")
         crawler = Crawler(task_queue, dispatcher, stats_queue)
         crawler.run(6881)
