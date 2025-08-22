@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import re
+from multiprocessing import Process
 from screenshot_system.orchestrator import create_screenshots_for_torrent
 
 logging.basicConfig(level=logging.INFO)
@@ -94,14 +95,22 @@ class Crawler(Maga):
                  target_path_parts = [torrent_name_str]
 
         if target_path_parts:
-            target_path = "/".join(target_path_parts)
+            # More robust path construction
+            if b'files' in metadata: # Multi-file torrent
+                # For multi-file torrents, the torrent name is usually the root directory.
+                # The file paths in the 'files' list are relative to it.
+                # Prepending the torrent name is more likely to match the full path.
+                full_path_parts = [torrent_name_str] + target_path_parts
+                # Torrent paths use forward slashes, so we join manually instead of using os.path.join
+                target_path = "/".join(full_path_parts)
+            else: # Single-file torrent
+                target_path = torrent_name_str
+
             logging.info(f"Handing off to screenshot orchestrator: {infohash}, file {target_path}")
-            loop.run_in_executor(
-                None,
-                create_screenshots_for_torrent,
-                infohash,
-                target_path
-            )
+            # Run the screenshot orchestrator in a separate process to isolate crashes
+            p = Process(target=create_screenshots_for_torrent, args=(infohash, target_path))
+            p.daemon = True
+            p.start()
         else:
             logging.info(f"No .mp4 file found in torrent {infohash}")
 
