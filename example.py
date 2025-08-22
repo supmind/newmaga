@@ -1,6 +1,8 @@
 from maga import Maga, get_metadata
 import asyncio
 import logging
+import os
+
 logging.basicConfig(level=logging.INFO)
 
 
@@ -10,7 +12,24 @@ class Crawler(Maga):
         metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
         if metadata:
             logging.info("Successfully downloaded metadata for infohash: %s", infohash)
-            logging.info("Metadata: %s", metadata)
+            info = metadata.get(b'info')
+            if not info:
+                logging.warning("No 'info' dict in metadata for infohash: %s", infohash)
+                return
+
+            if b'files' in info:
+                # Multi-file torrent
+                torrent_name = info[b'name'].decode('utf-8', 'ignore')
+                logging.info(f"Torrent Name: {torrent_name}")
+                for f in info[b'files']:
+                    file_path = os.path.join(*[path_part.decode('utf-8', 'ignore') for path_part in f[b'path']])
+                    file_size = f[b'length']
+                    logging.info(f"  - File: {file_path}, Size: {file_size} bytes")
+            else:
+                # Single-file torrent
+                file_name = info[b'name'].decode('utf-8', 'ignore')
+                file_size = info[b'length']
+                logging.info(f"File: {file_name}, Size: {file_size} bytes")
 
 crawler = Crawler()
 crawler.run(6881)
