@@ -35,7 +35,7 @@ class DownloaderService:
         print(f"[Downloader] Adding new torrent: {infohash}")
         magnet_link = f"magnet:?xt=urn:btih:{infohash}"
         params = {'save_path': '/tmp/', 'storage_mode': lt.storage_mode_t(2)}
-        handle = self.ses.add_magnet_uri(magnet_link, params)
+        handle = lt.add_magnet_uri(self.ses, magnet_link, params)
         self.handles[infohash] = handle
 
         # Wait for metadata
