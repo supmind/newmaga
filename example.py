@@ -62,6 +62,14 @@ def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, t
 
         logging.info(f"TASK {infohash}: Creating stream for file '{target_path_for_logging}' (index {target_file_index}, size {file_size})")
 
+        # Pre-buffer the first 2MB of the file to ensure PyAV has enough data to probe the format
+        # without getting stuck on slow connections. This is a workaround for older PyAV versions
+        # that don't support the 'probe_size' argument.
+        logging.info(f"TASK {infohash}: Pre-buffering first 2MB of the file for probing...")
+        pre_buffer_size = 2 * 1024 * 1024
+        downloader.download_byte_range(infohash, target_file_index, 0, pre_buffer_size)
+        logging.info(f"TASK {infohash}: Pre-buffering complete.")
+
         # The IO adapter is the file-like object that PyAV will read from.
         io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
 

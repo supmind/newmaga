@@ -12,9 +12,7 @@ def create_screenshots_from_stream(file_like_object, num_screenshots: int = 20, 
     container = None
     try:
         print("Orchestrator: Attempting to open stream with PyAV...")
-        # Probe size is increased to 2MB to give PyAV enough data to work with,
-        # preventing it from getting stuck waiting for more data on slow connections.
-        container = av.open(file_like_object, "r", probe_size=2*1024*1024)
+        container = av.open(file_like_object, "r")
         print("Orchestrator: Successfully opened stream with PyAV.")
 
         # Check if there are any video streams available.
