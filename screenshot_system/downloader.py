@@ -81,9 +81,18 @@ class Downloader:
             # Print status every 2 seconds
             if time.time() - last_status_print > 2:
                 s = handle.status()
-                state_str = ['queued', 'checking', 'downloading metadata', \
-                    'downloading', 'finished', 'seeding', 'allocating']
-                status_line = f"  - Status: {state_str[s.state]} | Progress: {s.progress * 100:.2f}% | Peers: {s.num_peers} | Down: {s.download_rate / 1000:.1f} kB/s"
+                # This state list is based on libtorrent 1.2.x/2.0.x enum `torrent_status::state_t`
+                state_str = [
+                    'queued_for_checking', 'checking_files', 'downloading_metadata', 'downloading',
+                    'finished', 'seeding', 'allocating', 'checking_resume_data'
+                ]
+                state_index = s.state
+                if state_index < len(state_str):
+                    state = state_str[state_index]
+                else:
+                    state = f'unknown ({state_index})'
+
+                status_line = f"  - Status: {state} | Progress: {s.progress * 100:.2f}% | Peers: {s.num_peers} | Down: {s.download_rate / 1000:.1f} kB/s"
                 print(status_line, end='\r')
                 last_status_print = time.time()
 
