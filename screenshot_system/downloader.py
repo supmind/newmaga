@@ -74,7 +74,7 @@ class Downloader:
         start_time = time.time()
         last_status_print = 0
         while expected_pieces_to_finish:
-            if time.time() - start_time > 120: # 2 minute timeout for downloading
+            if time.time() - start_time > 1800: # 30 minute timeout for downloading
                 print("\nTimeout waiting for pieces to download.")
                 return b''
 
@@ -113,7 +113,7 @@ class Downloader:
         expected_pieces_to_read = set(range(start_piece, end_piece + 1))
         start_time = time.time()
         while expected_pieces_to_read:
-            if time.time() - start_time > 30: # 30 second timeout for reading
+            if time.time() - start_time > 120: # 2 minute timeout for reading
                 print("Timeout waiting for piece data from storage.")
                 return b''
             alerts = self._wait_for_alert()
