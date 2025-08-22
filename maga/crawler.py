@@ -1,6 +1,10 @@
 import asyncio
 import os
 import signal
+import socket
+import uvloop
+
+uvloop.install()
 
 from socket import inet_ntoa
 from struct import unpack
@@ -69,7 +73,16 @@ class Maga(KRPCProtocol):
     def __init__(self, loop=None, bootstrap_nodes=constants.BOOTSTRAP_NODES, interval=1):
         super().__init__(loop)
         self.node_id = utils.random_node_id()
-        self.bootstrap_nodes = bootstrap_nodes
+
+        resolved_bootstrap_nodes = []
+        for host, port in bootstrap_nodes:
+            try:
+                ip = socket.gethostbyname(host)
+                resolved_bootstrap_nodes.append((ip, port))
+            except socket.gaierror:
+                pass
+        self.bootstrap_nodes = tuple(resolved_bootstrap_nodes)
+
         self.__running = False
         self.interval = interval
 
@@ -174,6 +187,10 @@ class Maga(KRPCProtocol):
                 constants.KRPC_ID: self.fake_node_id(node_id)
             }
         }, addr=addr)
+
+    def connection_lost(self, exc):
+        self.__running = False
+        super().connection_lost(exc)
 
     def fake_node_id(self, node_id=None):
         if node_id:
