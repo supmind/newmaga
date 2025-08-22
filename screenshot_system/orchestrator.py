@@ -59,6 +59,8 @@ def create_screenshots_from_stream(file_like_object, num_screenshots: int = 20, 
                 traceback.print_exc()
                 print("----------------------")
 
+    except av.error.InvalidDataError:
+        print("Orchestrator: ERROR: Failed to process stream, file data may be corrupt or not a valid video format.")
     except Exception as e:
         print("Orchestrator: FATAL: An unexpected error occurred in the orchestrator.")
         print("--- DETAILED ERROR ---")
