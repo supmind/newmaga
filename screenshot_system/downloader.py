@@ -6,9 +6,13 @@ class Downloader:
     def __init__(self):
         settings = {
             'listen_interfaces': '0.0.0.0:6881',
-            'alert_mask': lt.alert_category.storage | lt.alert_category.status
+            'alert_mask': lt.alert_category.storage | lt.alert_category.status,
+            'enable_dht': True
         }
         self.ses = lt.session(settings)
+        self.ses.add_dht_router("router.utorrent.com", 6881)
+        self.ses.add_dht_router("router.bittorrent.com", 6881)
+        self.ses.add_dht_router("dht.transmissionbt.com", 6881)
         self.handles = {}
 
     def get_torrent_handle(self, infohash: str):
