@@ -5,7 +5,7 @@ import sys
 class Downloader:
     def __init__(self):
         settings = {
-            'listen_interfaces': '0.0.0.0:6881',
+            'listen_interfaces': '0.0.0.0:6882',
             'alert_mask': lt.alert_category.status | lt.alert_category.storage,
             'enable_dht': True
         }
