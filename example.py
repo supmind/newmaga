@@ -14,12 +14,12 @@ class Crawler(Maga):
         if not metadata:
             return
 
-        # Requirement 1: Torrent name must contain Chinese or English characters.
+        # Requirement 1: Torrent name must contain Chinese or Japanese characters.
         torrent_name_bytes = metadata.get(b'name')
         if not torrent_name_bytes:
             return
         torrent_name_str = torrent_name_bytes.decode('utf-8', 'ignore')
-        if not re.search(r'[\u4e00-\u9fa5a-zA-Z]', torrent_name_str):
+        if not re.search(r'[\u4e00-\u9fa5\u3040-\u309f\u30a0-\u30ff]', torrent_name_str):
             return
 
         # Requirement 2: Must contain an .mp4 file.
