@@ -12,8 +12,9 @@ logging.basicConfig(level=logging.INFO)
 CLASSIFICATION_RULES = {
     'japanese_av': {
         'type': 'hybrid',
-        'regex': r'\b[A-Z0-9]{2,5}-?\d{2,5}\b',
-        'keywords': ['jav', 'jc']
+        # Stricter, case-sensitive regex for standard codes like 'ABC-123'
+        'regex': r'\b[A-Z]+-\d+\b',
+        'keywords': ['jav', 'fc2'] # Keywords for other formats, checked case-insensitively
     },
     'chinese_homemade': {
         'type': 'keywords',
@@ -31,8 +32,10 @@ def classify_torrent(name):
     for category, rule in CLASSIFICATION_RULES.items():
         rule_type = rule.get('type')
         if rule_type == 'hybrid':
-            if re.search(rule['regex'], name, re.IGNORECASE):
+            # Regex for this rule is case-sensitive
+            if re.search(rule['regex'], name):
                 return category
+            # Keywords are case-insensitive
             for word in rule['keywords']:
                 if word in name_lower:
                     return category
