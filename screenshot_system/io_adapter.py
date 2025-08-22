@@ -56,13 +56,16 @@ class TorrentFileIO(io.RawIOBase):
             result = response_queue.get(timeout=190)
             error = result.get('error')
             if error:
-                print(f"[IOAdapter] Request {request_id} failed: {error}")
+                # Silently fail on this read
+                pass
             else:
                 data = result.get('data', b'')
         except Empty:
-            print(f"[IOAdapter] Request {request_id} timed out.")
-        except Exception as e:
-            print(f"[IOAdapter] Request {request_id} failed with exception: {e}")
+            # Silently fail on timeout
+            pass
+        except Exception:
+            # Silently fail on other exceptions
+            pass
         finally:
             self.dispatcher.remove_request(request_id)
 
