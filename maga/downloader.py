@@ -44,7 +44,7 @@ class WirePeerClient:
         if isinstance(infohash, str):
             infohash = binascii.unhexlify(infohash.upper())
         self.infohash = infohash
-        self.peer_id = utils.random_id()
+        self.peer_id = utils.random_node_id()
         self.loop = loop or asyncio.get_event_loop()
 
         self.writer = None
