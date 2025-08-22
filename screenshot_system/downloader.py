@@ -6,7 +6,7 @@ class Downloader:
     def __init__(self):
         settings = {
             'listen_interfaces': '0.0.0.0:6881',
-            'alert_mask': lt.alert_category.storage | lt.alert_category.status,
+            'alert_mask': lt.alert_category.status | lt.alert_category.storage,
             'enable_dht': True
         }
         self.ses = lt.session(settings)
@@ -28,7 +28,7 @@ class Downloader:
         start_time = time.time()
         while not handle.has_metadata():
             self._wait_for_alert()
-            if time.time() - start_time > 30: # 30 second timeout for metadata
+            if time.time() - start_time > 30:
                 print("Timeout waiting for metadata.")
                 self.ses.remove_torrent(handle)
                 del self.handles[infohash]
@@ -49,11 +49,8 @@ class Downloader:
 
         tor_info = handle.get_torrent_info()
         piece_size = tor_info.piece_length()
-
-        # file_at() is on torrent_info, not the handle
         file_info = tor_info.file_at(file_index)
 
-        # Calculate piece range based on the file's offset in the torrent
         file_offset = file_info.offset
         abs_offset = file_offset + offset
 
@@ -62,53 +59,67 @@ class Downloader:
 
         print(f"Requesting pieces from {start_piece} to {end_piece} for file {file_index}")
 
+        # Phase 1: Prioritize and wait for pieces to be downloaded
+        for i in range(start_piece, end_piece + 1):
+            handle.piece_priority(i, 7)
+
+        expected_pieces_to_finish = set(range(start_piece, end_piece + 1))
+        start_time = time.time()
+        while expected_pieces_to_finish:
+            if time.time() - start_time > 120: # 2 minute timeout for downloading
+                print("Timeout waiting for pieces to download.")
+                return b''
+            alerts = self._wait_for_alert()
+            for alert in alerts:
+                if isinstance(alert, lt.piece_finished_alert):
+                    if alert.piece_index in expected_pieces_to_finish:
+                        print(f"Finished downloading piece {alert.piece_index}")
+                        expected_pieces_to_finish.remove(alert.piece_index)
+
+        print("All required pieces finished downloading.")
+
+        # Phase 2: Now that pieces are downloaded, read them
         for i in range(start_piece, end_piece + 1):
             handle.read_piece(i)
 
         downloaded_data = {}
-        expected_pieces = set(range(start_piece, end_piece + 1))
-
+        expected_pieces_to_read = set(range(start_piece, end_piece + 1))
         start_time = time.time()
-        while expected_pieces:
-            if time.time() - start_time > 60: # 60 second timeout for pieces
-                print("Timeout waiting for pieces.")
+        while expected_pieces_to_read:
+            if time.time() - start_time > 30: # 30 second timeout for reading
+                print("Timeout waiting for piece data from storage.")
                 return b''
-
             alerts = self._wait_for_alert()
             for alert in alerts:
                 if isinstance(alert, lt.read_piece_alert):
-                    if alert.piece in expected_pieces:
-                        print(f"Received piece {alert.piece}")
+                    if alert.piece in expected_pieces_to_read:
+                        print(f"Read data for piece {alert.piece} (size: {len(alert.buffer)})")
                         downloaded_data[alert.piece] = alert.buffer
-                        expected_pieces.remove(alert.piece)
+                        expected_pieces_to_read.remove(alert.piece)
 
-        print("All required pieces received.")
+        # De-prioritize pieces
+        for i in range(start_piece, end_piece + 1):
+            handle.piece_priority(i, 1)
 
-        # Debugging: check the size of each piece
-        for piece_index, piece_data in downloaded_data.items():
-            print(f"  - Debug: Piece {piece_index} has size {len(piece_data)}")
+        if len(downloaded_data) != (end_piece - start_piece + 1):
+            print("Error: Did not receive all requested piece data.")
+            return b''
 
+        # Assemble and slice
         full_chunk = b"".join(downloaded_data[i] for i in sorted(downloaded_data))
-        print(f"  - Debug: Total combined chunk size is {len(full_chunk)}")
-
-        # Slice the final result
-        # The start of our desired data relative to the start of the downloaded chunk
         slice_start = abs_offset - (start_piece * piece_size)
         slice_end = slice_start + size
-
-        result = full_chunk[slice_start:slice_end]
-        print(f"  - Debug: Slicing from {slice_start} to {slice_end}. Result size: {len(result)}")
-
-        return result
+        return full_chunk[slice_start:slice_end]
 
     def close_session(self):
+        # ... (rest of the class is the same)
         for infohash, handle in list(self.handles.items()):
             self.ses.remove_torrent(handle)
         self.handles = {}
 
 if __name__ == '__main__':
     downloader = Downloader()
-    infohash = "EA36231CF154B033FFE0694F1FAAD8C8D97B9EEC"
+    infohash = "08ada5a7a6183aae1e09d831df6748d566095a10" # Sintel (streamable)
 
     handle = downloader.get_torrent_handle(infohash)
     if handle:
@@ -116,7 +127,7 @@ if __name__ == '__main__':
         file_index = 0
         file_info = tor_info.file_at(file_index)
 
-        offset = 0
+        offset = 10 * 1024 * 1024 # 10MB into the file
         size = 1024
 
         print(f"\nAttempting to download {size} bytes from file '{file_info.path}' at offset {offset}")
