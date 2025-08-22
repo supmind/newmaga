@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import re
+from screenshot_system.orchestrator import create_screenshots_for_torrent
 
 logging.basicConfig(level=logging.INFO)
 
@@ -17,39 +18,27 @@ CLASSIFICATION_RULES = {
     'chinese_homemade': {
         'type': 'keywords',
         'words': [
-            # Explicit terms
-            '自拍', '探花', '寻花', '原创', '泄密', '流出', '调教', '露出', '口交',
-            '啪啪啪', '做爱', '操', '插', '射', '淫', '骚', '逼', '穴', '屌', '后庭',
-            '潮喷', '自慰', '群P', '3P', '乱伦', '奸',
-            # Identity
-            '学生', '少妇', '人妻', '女神', '嫩妹', '小姐姐', '美女', '学妹', '网红',
-            '名媛', '外围', '舞姬', '老师', '夫妻', '情侣',
-            # Origin/Platform
-            '国产', '國產', '91', '精东', '麻豆', '天美', '海角', '推特'
+            '自拍', '探花', '寻花', '原创', '泄密', '流出', '调教', '露出', '口交', '啪啪啪', '做爱', '操', '插', '射',
+            '淫', '骚', '逼', '穴', '屌', '后庭', '潮喷', '自慰', '群P', '3P', '乱伦', '奸', '学生', '少妇', '人妻',
+            '女神', '嫩妹', '小姐姐', '美女', '学妹', '网红', '名媛', '外围', '舞姬', '老师', '夫妻', '情侣', '国产',
+            '國產', '91', '精东', '麻豆', '天美', '海角', '推特'
         ]
     }
 }
 
 def classify_torrent(name):
-    """
-    Classifies a torrent based on its name.
-    Returns the category name as a string, or None if no category matches.
-    """
     name_lower = name.lower()
     for category, rule in CLASSIFICATION_RULES.items():
         rule_type = rule.get('type')
-        if rule_type == 'regex':
-            if re.search(rule.get('regex'), name, re.IGNORECASE):
-                return category
-        elif rule_type == 'keywords':
-            for word in rule['words']:
-                if word.lower() in name_lower:
-                    return category
-        elif rule_type == 'hybrid':
-            if re.search(rule.get('regex'), name, re.IGNORECASE):
+        if rule_type == 'hybrid':
+            if re.search(rule['regex'], name, re.IGNORECASE):
                 return category
             for word in rule['keywords']:
                 if word in name_lower:
+                    return category
+        elif rule_type == 'keywords':
+            for word in rule['words']:
+                if word.lower() in name_lower:
                     return category
     return None
 
@@ -57,11 +46,23 @@ def classify_torrent(name):
 
 
 class Crawler(Maga):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.processed_infohashes = set()
+
     async def handle_announce_peer(self, infohash, addr, peer_addr):
+        # Avoid processing the same torrent multiple times
+        if infohash in self.processed_infohashes:
+            return
+
+        # We need the metadata to classify and get file lists
+        # The original get_metadata is sufficient for this initial step
         loop = asyncio.get_event_loop()
         metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
         if not metadata:
             return
+
+        self.processed_infohashes.add(infohash)
 
         torrent_name_bytes = metadata.get(b'name')
         if not torrent_name_bytes:
@@ -74,38 +75,37 @@ class Crawler(Maga):
         if not category:
             return
 
-        # 2. Check for .mp4 files
-        has_mp4 = False
-        if b'files' in metadata:  # Multi-file
-            for f in metadata[b'files']:
-                path_parts = f.get(b'path')
+        logging.info(f"Classifier: Found target torrent '{torrent_name_str}' in category '{category}'")
+
+        # 2. Find the target video file (largest .mp4)
+        target_file_index = -1
+        largest_size = 0
+
+        if b'files' in metadata: # Multi-file
+            for i, f in enumerate(metadata[b'files']):
+                path_parts = f.get(b'path', [])
                 if path_parts:
                     filename = path_parts[-1].decode('utf-8', 'ignore')
                     if filename.lower().endswith('.mp4'):
-                        has_mp4 = True
-                        break
-        else:  # Single-file
-            if torrent_name_str.lower().endswith('.mp4'):
-                has_mp4 = True
+                        if f.get(b'length', 0) > largest_size:
+                            largest_size = f.get(b'length', 0)
+                            target_file_index = i
+        else: # Single-file
+             if torrent_name_str.lower().endswith('.mp4'):
+                 target_file_index = 0
 
-        if not has_mp4:
-            return
-
-        # 3. If all filters pass, log the information
-        logging.info("Successfully downloaded metadata for infohash: %s", infohash)
-        logging.info(f"Torrent Name: {torrent_name_str}")
-        logging.info(f"Category: {category}")
-
-        if b'files' in metadata:
-            # Multi-file torrent
-            for f in metadata[b'files']:
-                file_path = os.path.join(*[path_part.decode('utf-8', 'ignore') for path_part in f[b'path']])
-                file_size = f.get(b'length', 'N/A')
-                logging.info(f"  - File: {file_path}, Size: {file_size} bytes")
+        # 3. If we found a video file, start the screenshot process in a separate thread
+        if target_file_index != -1:
+            logging.info(f"Handing off to screenshot orchestrator: {infohash}, file index {target_file_index}")
+            loop.run_in_executor(
+                None, # Use the default thread pool executor
+                create_screenshots_for_torrent,
+                infohash,
+                target_file_index
+            )
         else:
-            # Single-file torrent
-            file_size = metadata.get(b'length', 'N/A')
-            logging.info(f"File: {torrent_name_str}, Size: {file_size} bytes")
+            logging.info(f"No .mp4 file found in torrent {infohash}")
+
 
 crawler = Crawler()
 crawler.run(6881)
