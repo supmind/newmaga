@@ -47,7 +47,7 @@ def classify_torrent(name):
 
 # --- End of Classification System ---
 
-def run_screenshot_task(infohash: str, target_file_index: int):
+def run_screenshot_task(infohash: str, target_path: str):
     """
     This function runs in a separate process.
     It handles the entire lifecycle of downloading and screenshotting for one torrent.
@@ -56,23 +56,34 @@ def run_screenshot_task(infohash: str, target_file_index: int):
     try:
         handle = downloader.get_torrent_handle(infohash)
         if not handle:
-            logging.error(f"TASK {infohash}: Could not get handle.")
+            logging.error(f"TASK {infohash}: Could not get handle for '{target_path}'.")
             return
 
         torrent_file = handle.torrent_file()
         if not torrent_file:
-            logging.error(f"TASK {infohash}: Could not get torrent_file from handle.")
+            logging.error(f"TASK {infohash}: Could not get torrent_file from handle for '{target_path}'.")
             return
 
         files = torrent_file.files()
-        if target_file_index >= files.num_files():
-            logging.error(f"TASK {infohash}: Invalid file index {target_file_index} for torrent with {files.num_files()} files.")
+
+        # Find the file index in this context by matching the target path
+        target_file_index = -1
+        for i in range(files.num_files()):
+            if files.file_path(i) == target_path:
+                target_file_index = i
+                break
+
+        if target_file_index == -1:
+            logging.error(f"TASK {infohash}: Could not find file path '{target_path}' in torrent.")
+            # DEBUG: List all available files if not found
+            print(f"Orchestrator: DEBUG: Listing all available files in torrent for target '{target_path}':")
+            for i in range(files.num_files()):
+                print(f"  - File {i}: {files.file_path(i)}")
             return
 
         file_size = files.file_size(target_file_index)
-        file_path = files.file_path(target_file_index)
 
-        logging.info(f"TASK {infohash}: Creating stream for file '{file_path}' (index {target_file_index}, size {file_size})")
+        logging.info(f"TASK {infohash}: Creating stream for file '{target_path}' (index {target_file_index}, size {file_size})")
 
         io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
 
@@ -119,12 +130,12 @@ class Crawler(Maga):
 
         logging.info(f"Classifier: Found target torrent '{torrent_name_str}' in category '{category}'")
 
-        # Find the index of the largest .mp4 file
-        target_file_index = -1
+        # Find the path of the largest .mp4 file
+        target_path_parts = None
         largest_size = 0
 
         if b'files' in metadata:  # Multi-file torrent
-            for i, f in enumerate(metadata.get(b'files', [])):
+            for f in metadata.get(b'files', []):
                 path_parts_bytes = f.get(b'path', [])
                 if not path_parts_bytes:
                     continue
@@ -134,15 +145,23 @@ class Crawler(Maga):
                     file_size = f.get(b'length', 0)
                     if file_size > largest_size:
                         largest_size = file_size
-                        target_file_index = i
+                        target_path_parts = [p.decode('utf-8', 'ignore') for p in path_parts_bytes]
         else:  # Single-file torrent
             if torrent_name_str.lower().endswith('.mp4'):
-                target_file_index = 0
+                target_path_parts = [torrent_name_str]
 
-        if target_file_index != -1:
-            logging.info(f"Handing off to screenshot process: infohash={infohash}, file_index={target_file_index}")
+        if target_path_parts:
+            # Construct the full path. For multi-file torrents, the torrent name
+            # is typically the root directory.
+            if b'files' in metadata:
+                full_path_parts = [torrent_name_str] + target_path_parts
+                target_path = "/".join(full_path_parts)
+            else:
+                target_path = torrent_name_str
+
+            logging.info(f"Handing off to screenshot process: infohash={infohash}, target_path={target_path}")
             # Run the screenshot task in a separate process to isolate crashes
-            p = Process(target=run_screenshot_task, args=(infohash, target_file_index))
+            p = Process(target=run_screenshot_task, args=(infohash, target_path))
             p.daemon = True
             p.start()
         else:
