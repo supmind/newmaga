@@ -15,33 +15,31 @@ from screenshot_system.io_adapter import TorrentFileIO
 
 # --- Start of Centralized Downloader Components ---
 
-class ResultDispatcher:
-    def __init__(self, manager, result_queue):
-        self.result_queue = result_queue
-        self.pending_requests = manager.dict()
-        self.manager = manager
-        self.thread = threading.Thread(target=self.run, daemon=True)
-        self.thread.start()
+def result_dispatcher_main(result_queue, pending_requests_map):
+    """Entry point for the result dispatcher thread."""
+    while True:
+        try:
+            result = result_queue.get()
+            request_id = result.get('request_id')
+            if request_id in pending_requests_map:
+                response_queue = pending_requests_map[request_id]
+                response_queue.put(result)
+        except Exception as e:
+            print(f"[Dispatcher] Error: {e}")
 
-    def run(self):
-        while True:
-            try:
-                result = self.result_queue.get()
-                request_id = result.get('request_id')
-                if request_id in self.pending_requests:
-                    response_queue = self.pending_requests[request_id]
-                    response_queue.put(result)
-            except Exception as e:
-                print(f"[Dispatcher] Error: {e}")
+class PendingRequestManager:
+    def __init__(self, manager):
+        self._map = manager.dict()
+        self.manager = manager
 
     def add_request(self, request_id):
         response_queue = self.manager.Queue(1)
-        self.pending_requests[request_id] = response_queue
+        self._map[request_id] = response_queue
         return response_queue
 
     def remove_request(self, request_id):
-        if request_id in self.pending_requests:
-            del self.pending_requests[request_id]
+        if request_id in self._map:
+            del self._map[request_id]
 
 # --- End of Centralized Downloader Components ---
 
@@ -96,21 +94,36 @@ class Crawler(Maga):
         self.stats_queue = stats_queue
 
     async def handle_announce_peer(self, infohash, addr, peer_addr):
-        if infohash in self.processed_infohashes: return
+        if infohash in self.processed_infohashes:
+            return
+
+        # Add infohash to set early to prevent re-processing
         self.processed_infohashes.add(infohash)
+        print(f"[Crawler] New infohash found: {infohash}. Trying to get metadata from {peer_addr}.")
 
         loop = asyncio.get_event_loop()
         try:
             metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop, loop_interval=0)
-        except Exception: return
-        if not metadata: return
+        except Exception as e:
+            print(f"[Crawler] Error getting metadata for {infohash}: {e}")
+            return
+
+        if not metadata:
+            print(f"[Crawler] No metadata received for {infohash}.")
+            return
 
         torrent_name_bytes = metadata.get(b'name')
-        if not torrent_name_bytes: return
-        torrent_name_str = torrent_name_bytes.decode('utf-8', 'ignore')
-        if not classify_torrent(torrent_name_str): return
+        if not torrent_name_bytes:
+            print(f"[Crawler] Metadata for {infohash} has no name.")
+            return
 
-        print(f"[Crawler] Found classified torrent: {torrent_name_str}")
+        torrent_name_str = torrent_name_bytes.decode('utf-8', 'ignore')
+        category = classify_torrent(torrent_name_str)
+        if not category:
+            # This is very common, so we don't log it to avoid spam
+            return
+
+        print(f"[Crawler] Found classified torrent: '{torrent_name_str}' in category '{category}'")
 
         target_file_index, largest_size = -1, 0
         files_metadata = metadata.get(b'files')
@@ -132,11 +145,12 @@ class Crawler(Maga):
             p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, self.task_queue, self.dispatcher, self.stats_queue))
             p.daemon = True
             p.start()
+        else:
+            print(f"[Crawler] No .mp4 file found in torrent '{torrent_name_str}'")
+
 
 if __name__ == "__main__":
-    # Set a higher log level for maga to reduce its noise
-    logging.basicConfig(level=logging.INFO)
-    logging.getLogger('maga').setLevel(logging.ERROR)
+    logging.basicConfig(level=logging.WARNING) # Further reduce log spam
 
     with Manager() as manager:
         task_queue = manager.Queue()
