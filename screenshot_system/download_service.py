@@ -26,7 +26,7 @@ class DownloaderService:
         settings.set_str(lt.setting_name.listen_interfaces, '0.0.0.0:0')
         settings.set_int(lt.setting_name.connections_limit, 200)
 
-        self.ses = lt.session(settings)
+        self.ses = lt.session(params=settings)
         self.ses.add_dht_router("router.utorrent.com", 6881)
         self.ses.add_dht_router("router.bittorrent.com", 6881)
         self.ses.add_dht_router("dht.transmissionbt.com", 6881)
@@ -55,7 +55,6 @@ class DownloaderService:
             params = lt.add_torrent_params()
             params.ti = ti
             params.save_path = '/tmp/'
-            # In 2.x, storage_mode is an enum on add_torrent_params
             params.storage_mode = lt.storage_mode_t.storage_mode_sparse
 
             handle = self.ses.add_torrent(params)
@@ -90,7 +89,7 @@ class DownloaderService:
                 alerts = self.ses.pop_alerts()
                 for alert in alerts:
                     alert_type = type(alert).__name__
-                    # self.log("ALERT", f"Received alert: {alert_type} - {alert}")
+                    self.log("ALERT", f"Received alert: {alert_type} - {alert}")
 
                     if isinstance(alert, lt.piece_finished_alert):
                         h = alert.handle
@@ -109,20 +108,6 @@ class DownloaderService:
                             self.result_dict[key] = bytes(alert.data)
                         else:
                             self.log(str(h.info_hash()).upper(), f"Failed to read piece {alert.piece_index}: {alert.error}")
-
-                    elif isinstance(alert, lt.torrent_status_alert):
-                        s = alert.status
-                        h = alert.handle
-                        infohash = str(h.info_hash()).upper()
-                        state_str = [
-                            'queued_for_checking', 'checking_files', 'downloading_metadata',
-                            'downloading', 'finished', 'seeding', 'allocating',
-                            'checking_resume_data'
-                        ]
-                        self.log(infohash,
-                            f"State: {state_str[s.state]}, "
-                            f"Peers: {s.num_peers}, Seeds: {s.num_seeds}, "
-                            f"Progress: {s.progress * 100:.2f}%")
 
             except Exception as e:
                 self.log("FATAL", f"Exception in main loop: {e}\n{traceback.format_exc()}")

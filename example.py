@@ -9,7 +9,8 @@ import signal
 from queue import Empty
 
 from maga import Maga, get_metadata
-from screenshot_system.download_service import DownloaderService
+# We do NOT import DownloaderService here in the main process
+# from screenshot_system.download_service import DownloaderService
 from screenshot_system.orchestrator import create_screenshots_from_stream
 from screenshot_system.io_adapter import TorrentFileIO
 
@@ -34,26 +35,20 @@ def classify_torrent(name):
 
 def run_screenshot_task(infohash: str, metadata: dict, target_file_index: int, file_size: int, stats_queue, request_queue, result_dict):
     """
-    This process is self-contained. It creates its own downloader
-    and handles one torrent from start to finish.
+    The main function for the screenshot worker process.
     """
     worker_id = os.getpid()
     print(f"[Worker:{worker_id}] Started for {infohash}")
-    print(f"[Worker:{worker_id}]   - File Index: {target_file_index}")
-    print(f"[Worker:{worker_id}]   - File Size: {file_size}")
     try:
-        # Tell the service to start managing this torrent
         print(f"[Worker:{worker_id}] Sending 'add_torrent' request to service...")
         request_queue.put(('add_torrent', (infohash, metadata)))
         print(f"[Worker:{worker_id}] Request sent. Initializing IO adapter...")
 
-        # The IO adapter uses the downloader service via the queues
         io_adapter = TorrentFileIO(infohash, metadata, target_file_index, file_size, request_queue, result_dict)
         create_screenshots_from_stream(io_adapter, infohash, stats_queue)
     except Exception as e:
         print(f"[Worker:{worker_id}] Unhandled error for {infohash}: {e}")
     finally:
-        # No need to close a downloader, the service handles it.
         print(f"[Worker:{worker_id}] Finished for {infohash}")
 
 
@@ -69,6 +64,16 @@ def statistics_worker(queue):
             except Empty: break
         total_screenshots += period_screenshots
         print(f"[STATS] Last 60s: {period_screenshots} screenshots. Total: {total_screenshots} screenshots.")
+
+def downloader_service_bootstrap(request_queue, result_dict):
+    """
+    This function is the entry point for the downloader service process.
+    It imports and starts the service, preventing the main process from
+    importing libtorrent 2.x code.
+    """
+    from screenshot_system.download_service import DownloaderService
+    service = DownloaderService(request_queue, result_dict)
+    service.run()
 
 class Crawler(Maga):
     def __init__(self, stats_queue, request_queue, result_dict, *args, **kwargs):
@@ -131,55 +136,47 @@ class Crawler(Maga):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
 
-    # Use a multiprocessing Manager to create shared objects
     manager = multiprocessing.Manager()
     stats_queue = manager.Queue()
     download_request_queue = manager.Queue()
     download_result_dict = manager.dict()
 
-    # Start statistics thread
     stats_thread = threading.Thread(target=statistics_worker, args=(stats_queue,), daemon=True)
     stats_thread.start()
 
-    # Create and start the downloader service
     print("[Main] Starting Downloader Service...")
-    downloader_service = DownloaderService(download_request_queue, download_result_dict)
-    downloader_process = multiprocessing.Process(target=downloader_service.run, daemon=True)
+    downloader_process = multiprocessing.Process(
+        target=downloader_service_bootstrap,
+        args=(download_request_queue, download_result_dict),
+        daemon=True
+    )
     downloader_process.start()
 
-    # Create the crawler instance
     crawler = Crawler(stats_queue, download_request_queue, download_result_dict)
 
-    # Define a graceful shutdown handler
     def shutdown_handler(signum, frame):
         print("\n[Main] Shutdown signal received. Cleaning up...")
 
-        # 1. Terminate downloader service
         if downloader_process.is_alive():
             print("[Main] Terminating downloader service...")
             downloader_process.terminate()
             downloader_process.join(timeout=5)
 
-        # 2. Terminate worker processes
-        # Make a copy as the list could be modified elsewhere
         for worker in list(crawler.worker_processes):
             if worker.is_alive():
                 print(f"[Main] Terminating worker {worker.pid}...")
                 worker.terminate()
                 worker.join(timeout=5)
 
-        # 3. Stop the crawler's event loop
         print("[Main] Stopping crawler...")
         if crawler.loop and crawler.loop.is_running():
             crawler.stop()
 
         print("[Main] Cleanup complete. Exiting.")
 
-    # Register the signal handlers
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
-    # Start the crawler
     print("[Main] Starting Crawler...")
     crawler.run(6881)
 
