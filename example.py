@@ -4,11 +4,11 @@ import os
 import re
 import time
 import threading
-from multiprocessing import Process, Queue
+import multiprocessing
 from queue import Empty
 
 from maga import Maga, get_metadata
-from screenshot_system.downloader import Downloader
+from screenshot_system.download_service import DownloaderService
 from screenshot_system.orchestrator import create_screenshots_from_stream
 from screenshot_system.io_adapter import TorrentFileIO
 
@@ -31,21 +31,20 @@ def classify_torrent(name):
     return None
 # --- End of Classification System ---
 
-def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, stats_queue):
+def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, stats_queue, request_queue, result_dict):
     """
     This process is self-contained. It creates its own downloader
     and handles one torrent from start to finish.
     """
     print(f"[Worker:{os.getpid()}] Started for {infohash}")
-    downloader = Downloader()
     try:
-        # The IO adapter uses the downloader owned by this process
-        io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
+        # The IO adapter uses the downloader service via the queues
+        io_adapter = TorrentFileIO(infohash, target_file_index, file_size, request_queue, result_dict)
         create_screenshots_from_stream(io_adapter, infohash, stats_queue)
     except Exception as e:
         print(f"[Worker:{os.getpid()}] Unhandled error for {infohash}: {e}")
     finally:
-        downloader.close_session()
+        # No need to close a downloader, the service handles it.
         print(f"[Worker:{os.getpid()}] Finished for {infohash}")
 
 
@@ -63,10 +62,12 @@ def statistics_worker(queue):
         print(f"[STATS] Last 60s: {period_screenshots} screenshots. Total: {total_screenshots} screenshots.")
 
 class Crawler(Maga):
-    def __init__(self, stats_queue, *args, **kwargs):
+    def __init__(self, stats_queue, request_queue, result_dict, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.processed_infohashes = set()
         self.stats_queue = stats_queue
+        self.request_queue = request_queue
+        self.result_dict = result_dict
 
     async def handle_announce_peer(self, infohash, addr, peer_addr):
         if infohash in self.processed_infohashes: return
@@ -103,22 +104,38 @@ class Crawler(Maga):
 
         if target_file_index != -1:
             print(f"[Crawler] Handing off task for {infohash}")
-            # Note: We now pass a regular multiprocessing.Queue for stats
-            p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, self.stats_queue))
+            args = (
+                infohash,
+                target_file_index,
+                largest_size,
+                self.stats_queue,
+                self.request_queue,
+                self.result_dict
+            )
+            p = multiprocessing.Process(target=run_screenshot_task, args=args)
             p.daemon = True
             p.start()
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
 
-    # A standard queue is sufficient for stats collection
-    stats_queue = Queue()
+    # Use a multiprocessing Manager to create shared objects
+    manager = multiprocessing.Manager()
+    stats_queue = manager.Queue()
+    download_request_queue = manager.Queue()
+    download_result_dict = manager.dict()
 
     # Start statistics thread
     stats_thread = threading.Thread(target=statistics_worker, args=(stats_queue,), daemon=True)
     stats_thread.start()
 
+    # Create and start the downloader service
+    print("[Main] Starting Downloader Service...")
+    downloader_service = DownloaderService(download_request_queue, download_result_dict)
+    downloader_process = multiprocessing.Process(target=downloader_service.run, daemon=True)
+    downloader_process.start()
+
     # Start the crawler
     print("[Main] Starting Crawler...")
-    crawler = Crawler(stats_queue)
+    crawler = Crawler(stats_queue, download_request_queue, download_result_dict)
     crawler.run(6881)
