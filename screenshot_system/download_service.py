@@ -39,8 +39,11 @@ class DownloaderService:
 
         # We need to create a torrent_info object from the metadata dict
         try:
-            info_bencoded = bencoder.bencode(metadata)
-            ti = lt.torrent_info(info_bencoded)
+            # The metadata from the crawler is the 'info' dict. libtorrent expects
+            # a full torrent file structure, so we must wrap it.
+            full_torrent_dict = {b'info': metadata}
+            full_torrent_bencoded = bencoder.bencode(full_torrent_dict)
+            ti = lt.torrent_info(full_torrent_bencoded)
 
             params = {
                 'ti': ti,
