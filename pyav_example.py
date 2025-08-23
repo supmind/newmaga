@@ -22,31 +22,19 @@ def take_midpoint_screenshot(video_path):
             midpoint_timestamp = duration // 2
 
             # Seek to the midpoint. The seek is to the nearest keyframe before the timestamp.
-            # Seek to the keyframe before the midpoint
-            container.seek(midpoint_timestamp, backward=True, any_frame=False, stream=video_stream)
+            # We use 'ns' unit for high precision.
+            container.seek(midpoint_timestamp, unit='ns', backward=True, any_frame=False, stream=video_stream)
 
-            # Decode frames to find the one closest to the midpoint
-            best_frame = None
-            min_diff = float('inf')
-            midpoint_sec = midpoint_timestamp / av.time_base
-
+            # Decode frames until we get one at or after our target
             for frame in container.decode(video=video_stream):
-                frame_sec = frame.pts * frame.time_base
-                diff = abs(frame_sec - midpoint_sec)
-                if diff < min_diff:
-                    min_diff = diff
-                    best_frame = frame
+                # We got the first frame after the seek, which is what we want.
+                print(f"Successfully decoded a frame at timestamp {frame.pts * video_stream.time_base:.2f}s")
 
-                if frame_sec > midpoint_sec + 1: # Stop 1s after midpoint
-                    break
-
-            if best_frame:
-                print(f"Successfully decoded a frame at timestamp {best_frame.pts * best_frame.time_base:.2f}s")
+                # Save the frame to an image file
                 output_filename = "screenshot.jpg"
-                best_frame.to_image().save(output_filename)
+                frame.to_image().save(output_filename)
                 print(f"Screenshot saved to {output_filename}")
-            else:
-                print("Could not decode a suitable frame.")
+                return # We only need one screenshot
 
     except av.AVError as e:
         print(f"An error occurred with PyAV: {e}")

@@ -4,13 +4,11 @@ import os
 import re
 import time
 import threading
-import multiprocessing
-import signal
+from multiprocessing import Process, Queue
 from queue import Empty
 
 from maga import Maga, get_metadata
-# We do NOT import DownloaderService here in the main process
-# from screenshot_system.download_service import DownloaderService
+from screenshot_system.downloader import Downloader
 from screenshot_system.orchestrator import create_screenshots_from_stream
 from screenshot_system.io_adapter import TorrentFileIO
 
@@ -33,24 +31,19 @@ def classify_torrent(name):
     return None
 # --- End of Classification System ---
 
-def run_screenshot_task(infohash: str, metadata: dict, target_file_index: int, file_size: int, stats_queue, request_queue, result_dict):
+def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, stats_queue):
     """
-    The main function for the screenshot worker process.
+    This process is self-contained. It creates its own downloader
+    and handles one torrent from start to finish.
     """
-    worker_id = os.getpid()
-    print(f"[Worker:{worker_id}] Started for {infohash}")
+    downloader = Downloader()
     try:
-        print(f"[Worker:{worker_id}] Sending 'add_torrent' request to service...")
-        request_queue.put(('add_torrent', (infohash, metadata)))
-        print(f"[Worker:{worker_id}] Request sent. Initializing IO adapter...")
-
-        io_adapter = TorrentFileIO(infohash, metadata, target_file_index, file_size, request_queue, result_dict)
-        create_screenshots_from_stream(io_adapter, infohash, stats_queue)
+        io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
+        create_screenshots_from_stream(io_adapter, infohash, stats_queue, num_screenshots=20)
     except Exception as e:
-        print(f"[Worker:{worker_id}] Unhandled error for {infohash}: {e}")
+        print(f"[Worker:{os.getpid()}] Unhandled error for {infohash}: {e}")
     finally:
-        print(f"[Worker:{worker_id}] Finished for {infohash}")
-
+        downloader.close_session()
 
 def statistics_worker(queue):
     total_screenshots = 0
@@ -65,24 +58,11 @@ def statistics_worker(queue):
         total_screenshots += period_screenshots
         print(f"[STATS] Last 60s: {period_screenshots} screenshots. Total: {total_screenshots} screenshots.")
 
-def downloader_service_bootstrap(request_queue, result_dict):
-    """
-    This function is the entry point for the downloader service process.
-    It imports and starts the service, preventing the main process from
-    importing libtorrent 2.x code.
-    """
-    from screenshot_system.download_service import DownloaderService
-    service = DownloaderService(request_queue, result_dict)
-    service.run()
-
 class Crawler(Maga):
-    def __init__(self, stats_queue, request_queue, result_dict, *args, **kwargs):
+    def __init__(self, stats_queue, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.processed_infohashes = set()
         self.stats_queue = stats_queue
-        self.request_queue = request_queue
-        self.result_dict = result_dict
-        self.worker_processes = []
 
     async def handle_announce_peer(self, infohash, addr, peer_addr):
         if infohash in self.processed_infohashes: return
@@ -100,8 +80,6 @@ class Crawler(Maga):
         torrent_name_str = torrent_name_bytes.decode('utf-8', 'ignore')
         if not classify_torrent(torrent_name_str): return
 
-        print(f"[Crawler] Found classified torrent: '{torrent_name_str}'")
-
         target_file_index, largest_size = -1, 0
         files_metadata = metadata.get(b'files')
         if files_metadata:
@@ -118,66 +96,18 @@ class Crawler(Maga):
                 largest_size, target_file_index = metadata.get(b'length', 0), 0
 
         if target_file_index != -1:
-            print(f"[Crawler] Handing off task for {infohash}")
-            args = (
-                infohash,
-                metadata,
-                target_file_index,
-                largest_size,
-                self.stats_queue,
-                self.request_queue,
-                self.result_dict
-            )
-            p = multiprocessing.Process(target=run_screenshot_task, args=args)
+            p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, self.stats_queue))
             p.daemon = True
             p.start()
-            self.worker_processes.append(p)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
 
-    manager = multiprocessing.Manager()
-    stats_queue = manager.Queue()
-    download_request_queue = manager.Queue()
-    download_result_dict = manager.dict()
+    stats_queue = Queue()
 
     stats_thread = threading.Thread(target=statistics_worker, args=(stats_queue,), daemon=True)
     stats_thread.start()
 
-    print("[Main] Starting Downloader Service...")
-    downloader_process = multiprocessing.Process(
-        target=downloader_service_bootstrap,
-        args=(download_request_queue, download_result_dict),
-        daemon=True
-    )
-    downloader_process.start()
-
-    crawler = Crawler(stats_queue, download_request_queue, download_result_dict)
-
-    def shutdown_handler(signum, frame):
-        print("\n[Main] Shutdown signal received. Cleaning up...")
-
-        if downloader_process.is_alive():
-            print("[Main] Terminating downloader service...")
-            downloader_process.terminate()
-            downloader_process.join(timeout=5)
-
-        for worker in list(crawler.worker_processes):
-            if worker.is_alive():
-                print(f"[Main] Terminating worker {worker.pid}...")
-                worker.terminate()
-                worker.join(timeout=5)
-
-        print("[Main] Stopping crawler...")
-        if crawler.loop and crawler.loop.is_running():
-            crawler.stop()
-
-        print("[Main] Cleanup complete. Exiting.")
-
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
-
     print("[Main] Starting Crawler...")
+    crawler = Crawler(stats_queue)
     crawler.run(6881)
-
-    print("[Main] Crawler has stopped. Exiting.")

@@ -153,14 +153,12 @@ class Maga(KRPCProtocol):
                     constants.KRPC_ID: self.fake_node_id(node_id)
                 }
             }, addr=addr)
-            if args.get(constants.KRPC_IMPLIED_PORT, 0) != 0:
-                peer_port = addr[1]
-            else:
-                peer_port = args[constants.KRPC_PORT]
-            peer_addr = (addr[0], peer_port)
-            await self.handle_announce_peer(
-                utils.proper_infohash(infohash), addr, peer_addr
-            )
+            peer_addr = [addr[0], addr[1]]
+            try:
+                peer_addr[1] = args[constants.KRPC_PORT]
+            except KeyError:
+                pass
+            await self.handle_announce_peer(utils.proper_infohash(infohash), addr, peer_addr)
         elif query_type == constants.KRPC_FIND_NODE:
             tid = msg[constants.KRPC_T]
             self.send_message({

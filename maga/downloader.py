@@ -18,7 +18,8 @@ BT_PROTOCOL = "BitTorrent protocol"
 BT_PROTOCOL_LEN = len(BT_PROTOCOL)
 EXT_ID = 20
 EXT_HANDSHAKE_ID = 0
-EXT_HANDSHAKE_MESSAGE = bytes([EXT_ID, EXT_HANDSHAKE_ID]) + bencoder.bencode({"m": {"ut_metadata": 1}})
+EXT_HANDSHAKE_MESSAGE = bytes([EXT_ID, EXT_HANDSHAKE_ID]) + bencoder.bencode({"m
+": {"ut_metadata": 1}})
 
 BLOCK = math.pow(2, 14)
 MAX_SIZE = BLOCK * 1000
@@ -85,7 +86,8 @@ class WirePeerClient:
         self.writer.write(length + message)
 
     def request_piece(self, piece):
-        msg = bytes([EXT_ID, self.ut_metadata]) + bencoder.bencode({"msg_type": 0, "piece": piece})
+        msg = bytes([EXT_ID, self.ut_metadata]) + bencoder.bencode({"msg_type":
+0, "piece": piece})
         self.write_message(msg)
 
     def pieces_complete(self):
@@ -114,7 +116,8 @@ class WirePeerClient:
                 else:
                     return self.close()
 
-            total_message_length, msg_id = struct.unpack("!IB", await self.reader.readexactly(5))
+            total_message_length, msg_id = struct.unpack("!IB", await self.reade
+r.readexactly(5))
             # Total message length contains message id length, remove it
             payload_length = total_message_length - 1
             payload = await self.reader.readexactly(payload_length)

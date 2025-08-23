@@ -28,7 +28,6 @@ KRPC_ID = b"id"
 KRPC_NODES = b"nodes"
 KRPC_INFO_HASH = b"info_hash"
 KRPC_PORT = b"port"
-KRPC_IMPLIED_PORT = b"implied_port"
 KRPC_TOKEN = b"token"
 KRPC_TARGET = b"target"
 
