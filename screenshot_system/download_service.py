@@ -10,7 +10,8 @@ def log(infohash, message):
 class DownloaderService:
     def __init__(self, request_queue, result_dict):
         log("SERVICE", "Initializing downloader service...")
-        settings = lt.high_performance_seed()
+        # Start with default settings, not seeding-optimized ones.
+        settings = lt.settings_pack()
         settings['listen_interfaces'] = '0.0.0.0:0'
         settings['alert_mask'] = (
             lt.alert_category.status |

@@ -36,7 +36,10 @@ def run_screenshot_task(infohash: str, metadata: dict, target_file_index: int, f
     This process is self-contained. It creates its own downloader
     and handles one torrent from start to finish.
     """
-    print(f"[Worker:{os.getpid()}] Started for {infohash}")
+    worker_id = os.getpid()
+    print(f"[Worker:{worker_id}] Started for {infohash}")
+    print(f"[Worker:{worker_id}]   - File Index: {target_file_index}")
+    print(f"[Worker:{worker_id}]   - File Size: {file_size}")
     try:
         # Tell the service to start managing this torrent
         request_queue.put(('add_torrent', (infohash, metadata)))
