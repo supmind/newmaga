@@ -5,18 +5,19 @@ import traceback
 os.makedirs('screenshots', exist_ok=True)
 
 def create_screenshots_from_stream(file_like_object, infohash: str, queue, num_screenshots: int = 20):
+    """
+    Generates screenshots from a given file-like object that PyAV can read.
+    """
     container = None
     try:
         container = av.open(file_like_object, "r")
 
         if not container.streams.video:
-            print(f"[{infohash}] No video streams found.")
             return
 
         video_stream = container.streams.video[0]
 
         if container.duration is None:
-            print(f"[{infohash}] Could not determine duration.")
             return
 
         duration_sec = container.duration / av.time_base
@@ -32,19 +33,23 @@ def create_screenshots_from_stream(file_like_object, infohash: str, queue, num_s
                 output_filename = f"screenshots/{infohash}_{int(timestamp_sec)}.jpg"
                 frame.to_image().save(output_filename)
 
-                print(f"Saved screenshot to {output_filename}")
+                print(f"Orchestrator: Saved screenshot to {output_filename}")
                 if queue:
                     queue.put(1)
 
             except StopIteration:
                 break
             except Exception:
+                # We are silencing all screenshot-specific errors as requested.
+                # The main process will only show the final summary.
                 pass
 
     except av.error.InvalidDataError:
-        print(f"[{infohash}] Failed to open stream, file data may be corrupt.")
-    except Exception as e:
-        print(f"[{infohash}] FATAL orchestrator error: {e}")
+        # Silencing corrupt file errors
+        pass
+    except Exception:
+        # Silencing all other fatal errors in the orchestrator
+        pass
     finally:
         if container:
             container.close()

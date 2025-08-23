@@ -1,11 +1,17 @@
 import io
+import uuid
+from queue import Empty
 
 class TorrentFileIO(io.RawIOBase):
-    def __init__(self, downloader, infohash: str, file_index: int, file_size: int):
-        self.downloader = downloader
+    def __init__(self, infohash: str, file_index: int, file_size: int, task_queue, pending_requests_map, manager):
         self.infohash = infohash
         self.file_index = file_index
         self.file_size = file_size
+
+        self.task_queue = task_queue
+        self.pending_requests = pending_requests_map
+        self.manager = manager
+
         self.pos = 0
 
     def readable(self):
@@ -37,12 +43,33 @@ class TorrentFileIO(io.RawIOBase):
         if read_size <= 0:
             return b''
 
-        data = self.downloader.download_byte_range(
-            self.infohash,
-            self.file_index,
-            self.pos,
-            read_size
-        )
+        request_id = uuid.uuid4().hex
+        response_queue = self.manager.Queue(1)
+        self.pending_requests[request_id] = response_queue
+
+        task = {
+            'type': 'DOWNLOAD_RANGE',
+            'request_id': request_id,
+            'infohash': self.infohash,
+            'file_index': self.file_index,
+            'offset': self.pos,
+            'size': read_size,
+        }
+
+        self.task_queue.put(task)
+
+        try:
+            # Block and wait for the result from the downloader service via the dispatcher
+            result = response_queue.get(timeout=180)
+            data = result.get('data', b'')
+        except Empty:
+            data = b''
+        except Exception:
+            data = b''
+        finally:
+            # Clean up the map
+            if request_id in self.pending_requests:
+                del self.pending_requests[request_id]
 
         if data:
             self.pos += len(data)
