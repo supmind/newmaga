@@ -4,14 +4,14 @@ import sys
 
 class Downloader:
     def __init__(self):
-        settings = lt.high_performance_seed()
-        settings['listen_interfaces'] = '0.0.0.0:0'
-        settings['alert_mask'] = (
+        settings = lt.settings_pack()
+        settings.set_str("listen_interfaces", "0.0.0.0:0")
+        settings.set_int("alert_mask",
             lt.alert_category.status |
             lt.alert_category.storage |
             lt.alert_category.error
         )
-        settings['connections_limit'] = 200
+        settings.set_int("connections_limit", 200)
 
         self.ses = lt.session(settings)
         self.ses.add_dht_router("router.utorrent.com", 6881)
@@ -25,23 +25,27 @@ class Downloader:
         if infohash in self.handles:
             return self.handles[infohash]
 
-        magnet_link = f"magnet:?xt=urn:btih:{infohash}"
-        params = {'save_path': '/tmp/', 'storage_mode': lt.storage_mode_t(2)}
-        handle = lt.add_magnet_uri(self.ses, magnet_link, params)
+        params = {
+            'info_hashes': infohash,
+            'save_path': '/tmp/',
+            'storage_mode': lt.storage_mode_t.storage_mode_sparse
+        }
+        handle = self.ses.add_torrent(params)
         self.handles[infohash] = handle
 
         meta_start_time = time.time()
-        while not handle.has_metadata():
+        while not handle.status().has_metadata:
             self._wait_for_alert()
             if time.time() - meta_start_time > 60:
                 print(f"Timeout getting metadata for {infohash}")
-                self.ses.remove_torrent(handle, lt.session_handle.delete_files)
+                if handle.is_valid():
+                    self.ses.remove_torrent(handle, lt.session.delete_files)
                 del self.handles[infohash]
                 return None
         return handle
 
     def _wait_for_alert(self, timeout=1.0):
-        self.ses.wait_for_alert(int(timeout * 1000))
+        self.ses.wait_for_alerts(int(timeout * 1000))
         return self.ses.pop_alerts()
 
     def download_byte_range(self, infohash: str, file_index: int, offset: int, size: int) -> bytes:
@@ -49,12 +53,13 @@ class Downloader:
         if not handle:
             return b''
 
-        ti = handle.torrent_file()
+        ti = handle.get_torrent_info()
         if not ti:
             return b''
 
         piece_size = ti.piece_length()
-        file_offset = ti.files().file_offset(file_index)
+        fs = ti.files()
+        file_offset = fs.file_offset(file_index)
         abs_offset = file_offset + offset
 
         start_piece, _ = divmod(abs_offset, piece_size)
@@ -63,7 +68,7 @@ class Downloader:
         pieces_needed = set(range(start_piece, end_piece + 1))
 
         for p_idx in pieces_needed:
-            handle.piece_priority(p_idx, 7)
+            handle.piece_priority(p_idx, lt.top_priority)
 
         download_start_time = time.time()
         pieces_done = set()
@@ -72,7 +77,7 @@ class Downloader:
                 return b''
 
             s = handle.status()
-            if s.state in [lt.torrent_status.state_t.finished, lt.torrent_status.state_t.seeding]:
+            if s.state in [lt.torrent_status.states.finished, lt.torrent_status.states.seeding]:
                 break
 
             alerts = self.ses.pop_alerts()
@@ -84,10 +89,15 @@ class Downloader:
         all_data = {}
         for piece_index in sorted(list(pieces_needed)):
             handle.read_piece(piece_index)
-            alert = self.ses.wait_for_alert(10000)
-            if isinstance(alert, lt.read_piece_alert) and alert.piece == piece_index:
-                 all_data[piece_index] = bytes(alert.buffer)
-            else:
+            self.ses.wait_for_alerts(10000)
+            alerts = self.ses.pop_alerts()
+            found_piece = False
+            for alert in alerts:
+                if isinstance(alert, lt.read_piece_alert) and alert.piece_index == piece_index:
+                    all_data[piece_index] = bytes(alert.data)
+                    found_piece = True
+                    break
+            if not found_piece:
                 return b'' # Failed to read
 
         full_chunk = b"".join(all_data[i] for i in sorted(all_data))
@@ -100,7 +110,7 @@ class Downloader:
         for infohash, handle in list(self.handles.items()):
             try:
                 if handle.is_valid():
-                    self.ses.remove_torrent(handle, lt.session_handle.delete_files)
-            except lt.error:
+                    self.ses.remove_torrent(handle, lt.session.delete_files)
+            except lt.libtorrent_error:
                 pass
         self.handles = {}

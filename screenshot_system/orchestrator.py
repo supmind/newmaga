@@ -29,12 +29,33 @@ def create_screenshots_from_stream(file_like_object, infohash: str, queue, num_s
             try:
                 print(f"[{infohash}] Orchestrator: Processing screenshot at {timestamp_sec:.2f}s...")
 
+                # Seek to the keyframe before the target timestamp
                 seek_target = int(timestamp_sec * av.time_base)
                 container.seek(seek_target, backward=True, any_frame=False, stream=video_stream)
 
-                frame = next(container.decode(video=0))
+                # Decode frames and find the one closest to the target timestamp
+                best_frame = None
+                min_diff = float('inf')
 
-                output_filename = f"screenshots/{infohash}_{int(timestamp_sec)}.jpg"
+                for frame in container.decode(video=0):
+                    frame_timestamp_sec = frame.pts * frame.time_base
+                    diff = abs(frame_timestamp_sec - timestamp_sec)
+
+                    if diff < min_diff:
+                        min_diff = diff
+                        best_frame = frame
+
+                    # Stop decoding if we have passed the target by a reasonable margin (e.g., 1 second)
+                    # This is a heuristic to avoid decoding the entire rest of the file.
+                    if frame_timestamp_sec > timestamp_sec + 1:
+                        break
+
+                if best_frame is None:
+                    print(f"[{infohash}] Orchestrator: WARNING - Could not decode any frames near {timestamp_sec:.2f}s.")
+                    continue
+
+                frame = best_frame
+                output_filename = f"screenshots/{infohash}_{int(frame.pts * frame.time_base)}.jpg"
                 frame.to_image().save(output_filename)
 
                 print(f"Orchestrator: Saved screenshot to {output_filename}")
