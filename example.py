@@ -134,24 +134,8 @@ if __name__ == "__main__":
     # Use a multiprocessing Manager to create shared objects
     manager = multiprocessing.Manager()
     stats_queue = manager.Queue()
-    log_queue = manager.Queue()
     download_request_queue = manager.Queue()
     download_result_dict = manager.dict()
-
-    # Set up a thread to print logs from the shared queue
-    def log_worker(queue):
-        while True:
-            try:
-                record = queue.get()
-                # Using a sentinel to stop the thread
-                if record is None:
-                    break
-                print(record)
-            except (IOError, EOFError):
-                break
-
-    log_thread = threading.Thread(target=log_worker, args=(log_queue,), daemon=True)
-    log_thread.start()
 
     # Start statistics thread
     stats_thread = threading.Thread(target=statistics_worker, args=(stats_queue,), daemon=True)
@@ -159,7 +143,7 @@ if __name__ == "__main__":
 
     # Create and start the downloader service
     print("[Main] Starting Downloader Service...")
-    downloader_service = DownloaderService(download_request_queue, download_result_dict, log_queue)
+    downloader_service = DownloaderService(download_request_queue, download_result_dict)
     downloader_process = multiprocessing.Process(target=downloader_service.run, daemon=True)
     downloader_process.start()
 

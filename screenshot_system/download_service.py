@@ -2,21 +2,27 @@ import libtorrent as lt
 import time
 import collections
 import bencode2 as bencoder
+import datetime
+
+LOG_FILE = 'downloader_service.log'
+
+def log_to_file(message):
+    """Appends a message to the service log file."""
+    with open(LOG_FILE, 'a') as f:
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        f.write(f"{timestamp} - {message}\n")
 
 class DownloaderService:
-    def __init__(self, request_queue, result_dict, log_queue):
-        self.log_queue = log_queue
+    def __init__(self, request_queue, result_dict):
+        # Clear the log file at startup
+        with open(LOG_FILE, 'w'):
+            pass
+
         self.log("SERVICE", "Initializing downloader service...")
 
-        # Use a plain dictionary for settings for compatibility with older libtorrent versions.
         settings = {
             'listen_interfaces': '0.0.0.0:0',
-            'alert_mask': (
-                lt.alert_category.status |
-                lt.alert_category.storage |
-                lt.alert_category.error |
-                lt.alert_category.performance_warning
-            ),
+            'alert_mask': lt.alert.all_categories,
             'connections_limit': 200
         }
 
@@ -32,8 +38,8 @@ class DownloaderService:
         self.log("SERVICE", "Downloader service initialized.")
 
     def log(self, infohash, message):
-        """Puts a log message on the shared log queue."""
-        self.log_queue.put(f"[{infohash}][Service] {message}")
+        """Logs a message to the dedicated service log file."""
+        log_to_file(f"[{infohash}][Service] {message}")
 
     def add_torrent_with_metadata(self, infohash, metadata):
         """Adds a new torrent using its complete metadata."""
@@ -49,10 +55,11 @@ class DownloaderService:
             params = {
                 'ti': ti,
                 'save_path': '/tmp/',
-                'storage_mode': lt.storage_mode_t(2), # storage_mode_sparse
+                'storage_mode': lt.storage_mode_t(2),
             }
             handle = self.ses.add_torrent(params)
             self.handles[infohash] = handle
+            self.log(infohash, "Successfully added torrent to session.")
         except Exception as e:
             self.log(infohash, f"Error adding torrent with metadata: {e}")
 
@@ -60,62 +67,52 @@ class DownloaderService:
         """The main event loop for the service."""
         self.log("SERVICE", "Running main loop...")
         while True:
-            while not self.request_queue.empty():
-                req_type, payload = self.request_queue.get()
+            try:
+                while not self.request_queue.empty():
+                    req_type, payload = self.request_queue.get_nowait()
 
-                if req_type == 'add_torrent':
-                    infohash, metadata = payload
-                    self.add_torrent_with_metadata(infohash, metadata)
+                    if req_type == 'add_torrent':
+                        infohash, metadata = payload
+                        self.add_torrent_with_metadata(infohash, metadata)
 
-                elif req_type == 'get_piece':
-                    infohash, piece_index = payload
-                    if infohash not in self.handles:
-                        self.log(infohash, f"Warning: Piece {piece_index} requested before torrent was added.")
-                        continue
+                    elif req_type == 'get_piece':
+                        infohash, piece_index = payload
+                        if infohash not in self.handles:
+                            self.log(infohash, f"Warning: Piece {piece_index} requested before torrent was added.")
+                            continue
 
-                    handle = self.handles[infohash]
-                    if handle.is_valid():
-                        handle.piece_priority(piece_index, 7) # 7 is top priority in 1.x
-                        self.log(infohash, f"Prioritized piece {piece_index}")
+                        handle = self.handles[infohash]
+                        if handle.is_valid():
+                            handle.piece_priority(piece_index, 7)
+                            self.log(infohash, f"Prioritized piece {piece_index}")
 
-            alerts = self.ses.pop_alerts()
-            for alert in alerts:
-                if isinstance(alert, lt.piece_finished_alert):
-                    h = alert.handle
-                    if h.is_valid():
-                        infohash = str(h.info_hash()).upper()
-                        piece_index = alert.piece_index
-                        self.log(infohash, f"Finished downloading piece {piece_index}. Queueing for read.")
-                        self.read_queue.append((infohash, piece_index))
+                alerts = self.ses.pop_alerts()
+                for alert in alerts:
+                    alert_type = type(alert).__name__
+                    self.log("ALERT", f"Received alert: {alert_type} - {alert}")
 
-                elif isinstance(alert, lt.read_piece_alert):
-                    h = alert.handle
-                    if h.is_valid() and not alert.error:
-                        infohash = str(h.info_hash()).upper()
-                        piece_index = alert.piece
-                        self.log(infohash, f"Successfully read piece {piece_index} from cache.")
-                        key = ('piece', infohash, piece_index)
-                        self.result_dict[key] = bytes(alert.buffer)
-                    elif alert.error:
-                        self.log(str(h.info_hash()).upper(), f"Failed to read piece {alert.piece}: {alert.error.message()}")
+                    if isinstance(alert, lt.piece_finished_alert):
+                        h = alert.handle
+                        if h.is_valid():
+                            infohash = str(h.info_hash()).upper()
+                            piece_index = alert.piece_index
+                            self.log(infohash, f"Finished downloading piece {piece_index}. Queueing for read.")
+                            self.read_queue.append((infohash, piece_index))
 
-                elif isinstance(alert, lt.torrent_status_alert):
-                    s = alert.status
-                    h = alert.handle
-                    if h.is_valid():
-                        infohash = str(h.info_hash()).upper()
-                        state_str = [
-                            'queued', 'checking', 'downloading metadata',
-                            'downloading', 'finished', 'seeding', 'allocating',
-                            'checking fastresume'
-                        ]
-                        self.log(infohash,
-                            f"State: {state_str[s.state]}, "
-                            f"Peers: {s.num_peers}, Seeds: {s.num_seeds}, "
-                            f"Progress: {s.progress * 100:.2f}%")
+                    elif isinstance(alert, lt.read_piece_alert):
+                        h = alert.handle
+                        if h.is_valid() and not alert.error:
+                            infohash = str(h.info_hash()).upper()
+                            piece_index = alert.piece
+                            self.log(infohash, f"Successfully read piece {piece_index} from cache.")
+                            key = ('piece', infohash, piece_index)
+                            self.result_dict[key] = bytes(alert.buffer)
+                        elif alert.error:
+                            self.log(str(h.info_hash()).upper(), f"Failed to read piece {alert.piece}: {alert.error.message()}")
 
-                else:
-                    self.log("SERVICE", f"Unhandled Alert: {alert}")
+            except Exception as e:
+                self.log("FATAL", f"Exception in main loop: {e}\n{traceback.format_exc()}")
+
 
             if self.read_queue:
                 infohash, piece_index = self.read_queue.popleft()
