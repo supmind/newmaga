@@ -1,113 +1,49 @@
-import asyncio
-import logging
+import multiprocessing
 import os
-import re
 import time
-import threading
-from multiprocessing import Process, Queue
-from queue import Empty
 
-from maga import Maga, get_metadata
-from screenshot_system.downloader import Downloader
-from screenshot_system.orchestrator import create_screenshots_from_stream
-from screenshot_system.io_adapter import TorrentFileIO
+# We must import libtorrent here to check the version in this process
+try:
+    import libtorrent as lt
+    MAIN_LT_VERSION = lt.version
+except Exception as e:
+    MAIN_LT_VERSION = f"Error importing or getting version in main process: {e}"
 
-# --- Start of Classification System (Unchanged) ---
-CLASSIFICATION_RULES = {
-    'japanese_av': {'type': 'hybrid', 'regex': r'\b[A-Z]+-\d+\b', 'keywords': ['jav', 'fc2']},
-    'chinese_homemade': {'type': 'keywords', 'words': ['自拍', '探花', '寻花', '原创', '泄密', '流出', '调教', '露出', '口交', '啪啪啪', '做爱', '操', '插', '射', '淫', '骚', '逼', '穴', '屌', '后庭', '潮喷', '自慰', '群P', '3P', '乱伦', '奸', '学生', '少妇', '人妻', '女神', '嫩妹', '小姐姐', '美女', '学妹', '网红', '名媛', '外围', '舞姬', '老师', '夫妻', '情侣', '国产', '國產', '91', '精东', '麻豆', '天美', '海角', '推特']}
-}
-def classify_torrent(name):
-    name_lower = name.lower()
-    for category, rule in CLASSIFICATION_RULES.items():
-        rule_type = rule.get('type')
-        if rule_type == 'hybrid':
-            if re.search(rule['regex'], name): return category
-            for word in rule['keywords']:
-                if word in name_lower: return category
-        elif rule_type == 'keywords':
-            for word in rule['words']:
-                if word.lower() in name_lower: return category
-    return None
-# --- End of Classification System ---
 
-def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, stats_queue):
+def downloader_service_bootstrap():
     """
-    This process is self-contained. It creates its own downloader
-    and handles one torrent from start to finish.
+    This function is the entry point for the downloader service process.
+    It will import the service and run its test.
     """
-    downloader = Downloader()
-    try:
-        io_adapter = TorrentFileIO(downloader, infohash, target_file_index, file_size)
-        create_screenshots_from_stream(io_adapter, infohash, stats_queue, num_screenshots=20)
-    except Exception as e:
-        print(f"[Worker:{os.getpid()}] Unhandled error for {infohash}: {e}")
-    finally:
-        downloader.close_session()
+    # This import happens in the child process
+    from screenshot_system.download_service import DownloaderService
 
-def statistics_worker(queue):
-    total_screenshots = 0
-    while True:
-        time.sleep(60)
-        period_screenshots = 0
-        while not queue.empty():
-            try:
-                queue.get_nowait()
-                period_screenshots += 1
-            except Empty: break
-        total_screenshots += period_screenshots
-        print(f"[STATS] Last 60s: {period_screenshots} screenshots. Total: {total_screenshots} screenshots.")
-
-class Crawler(Maga):
-    def __init__(self, stats_queue, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.processed_infohashes = set()
-        self.stats_queue = stats_queue
-
-    async def handle_announce_peer(self, infohash, addr, peer_addr):
-        if infohash in self.processed_infohashes: return
-        self.processed_infohashes.add(infohash)
-
-        loop = asyncio.get_event_loop()
-        try:
-            metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
-        except Exception:
-            return
-        if not metadata: return
-
-        torrent_name_bytes = metadata.get(b'name')
-        if not torrent_name_bytes: return
-        torrent_name_str = torrent_name_bytes.decode('utf-8', 'ignore')
-        if not classify_torrent(torrent_name_str): return
-
-        target_file_index, largest_size = -1, 0
-        files_metadata = metadata.get(b'files')
-        if files_metadata:
-            for i, f in enumerate(files_metadata):
-                path_parts_bytes = f.get(b'path', [])
-                if not path_parts_bytes: continue
-                filename = path_parts_bytes[-1].decode('utf-8', 'ignore')
-                if filename.lower().endswith('.mp4'):
-                    file_size = f.get(b'length', 0)
-                    if file_size > largest_size:
-                        largest_size, target_file_index = file_size, i
-        else:
-            if torrent_name_str.lower().endswith('.mp4'):
-                largest_size, target_file_index = metadata.get(b'length', 0), 0
-
-        if target_file_index != -1:
-            p = Process(target=run_screenshot_task, args=(infohash, target_file_index, largest_size, self.stats_queue))
-            p.daemon = True
-            p.start()
+    service = DownloaderService()
+    service.run()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.WARNING)
+    print("--- libtorrent Version Test ---")
+    print(f"[Main] libtorrent version in main process: {MAIN_LT_VERSION}")
 
-    stats_queue = Queue()
+    # Clean up old log file
+    if os.path.exists('downloader_service.log'):
+        os.remove('downloader_service.log')
 
-    stats_thread = threading.Thread(target=statistics_worker, args=(stats_queue,), daemon=True)
-    stats_thread.start()
+    print("[Main] Starting Downloader Service for version test...")
+    downloader_process = multiprocessing.Process(
+        target=downloader_service_bootstrap,
+        daemon=True
+    )
+    downloader_process.start()
 
-    print("[Main] Starting Crawler...")
-    crawler = Crawler(stats_queue)
-    crawler.run(6881)
+    # Wait for the child process to finish its work (logging to the file)
+    print("[Main] Waiting for service process to complete test...")
+    downloader_process.join(timeout=15)
+
+    if downloader_process.is_alive():
+        print("[Main] Test process timed out.")
+        downloader_process.terminate()
+
+    print("\n--- Test Complete ---")
+    print("Please check the contents of the 'downloader_service.log' file for the service's version report.")
+    print("Compare it with the version printed above for the main process.")
