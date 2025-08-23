@@ -10,16 +10,17 @@ def log(infohash, message):
 class DownloaderService:
     def __init__(self, request_queue, result_dict):
         log("SERVICE", "Initializing downloader service...")
-        # Start with default settings, not seeding-optimized ones.
-        settings = lt.settings_pack()
-        settings['listen_interfaces'] = '0.0.0.0:0'
-        settings['alert_mask'] = (
-            lt.alert_category.status |
-            lt.alert_category.storage |
-            lt.alert_category.error |
-            lt.alert_category.performance_warning
-        )
-        settings['connections_limit'] = 200
+        # Use a plain dictionary for settings for compatibility with older libtorrent versions.
+        settings = {
+            'listen_interfaces': '0.0.0.0:0',
+            'alert_mask': (
+                lt.alert_category.status |
+                lt.alert_category.storage |
+                lt.alert_category.error |
+                lt.alert_category.performance_warning
+            ),
+            'connections_limit': 200
+        }
 
         self.ses = lt.session(settings)
         self.ses.add_dht_router("router.utorrent.com", 6881)
