@@ -114,6 +114,9 @@ class DownloaderService:
                             f"Peers: {s.num_peers}, Seeds: {s.num_seeds}, "
                             f"Progress: {s.progress * 100:.2f}%")
 
+                else:
+                    self.log("SERVICE", f"Unhandled Alert: {alert}")
+
             if self.read_queue:
                 infohash, piece_index = self.read_queue.popleft()
                 if infohash in self.handles:
