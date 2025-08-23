@@ -22,7 +22,8 @@ class DownloaderService:
 
         settings = {
             'listen_interfaces': '0.0.0.0:0',
-            'alert_mask': lt.alert.all_categories,
+            # Use the integer value for all alerts for maximum compatibility.
+            'alert_mask': 0xffffffff,
             'connections_limit': 200
         }
 
