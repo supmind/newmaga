@@ -1,4 +1,3 @@
 bencode2
 uvloop
-libtorrent==2.0.11
 av
