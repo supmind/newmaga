@@ -69,13 +69,10 @@ class WirePeerClient:
             pass
 
     def check_handshake(self, data):
-        # Check BT Protocol Prefix
         if data[:20] != BT_HEADER[:20]:
             return False
-        # Check InfoHash
         if data[28:48] != self.infohash:
             return False
-        # Check support metadata exchange
         if data[25] & 0x10 != 0x10:
             return False
         return True
@@ -92,12 +89,10 @@ class WirePeerClient:
         metainfo = b''.join(self.pieces)
 
         if len(metainfo) != self.metadata_size:
-            # Wrong size
             return self.close()
 
         infohash = hashlib.sha1(metainfo).hexdigest()
         if binascii.unhexlify(infohash.upper()) != self.infohash:
-            # Wrong infohash
             return self.close()
 
         return bencoder.bdecode(metainfo)
@@ -109,13 +104,11 @@ class WirePeerClient:
                 data = await self.reader.readexactly(68)
                 if self.check_handshake(data):
                     self.handshaked = True
-                    # Send EXT Handshake
                     self.write_message(EXT_HANDSHAKE_MESSAGE)
                 else:
                     return self.close()
 
             total_message_length, msg_id = struct.unpack("!IB", await self.reader.readexactly(5))
-            # Total message length contains message id length, remove it
             payload_length = total_message_length - 1
             payload = await self.reader.readexactly(payload_length)
 
@@ -123,7 +116,6 @@ class WirePeerClient:
                 continue
             extended_id, extend_payload = payload[0], payload[1:]
             if extended_id == 0 and not self.ut_metadata:
-                # Extend handshake, receive ut_metadata and metadata_size
                 try:
                     self.ut_metadata = get_ut_metadata(extend_payload)
                     self.metadata_size = get_metadata_size(extend_payload)
@@ -152,13 +144,17 @@ class WirePeerClient:
 
 
 async def get_metadata(infohash, ip, port, loop=None):
-    if not loop:
-        loop = asyncio.get_event_loop()
-
+    """
+    Connects to a single peer and attempts to download the metadata.
+    """
     client = WirePeerClient(infohash, loop=loop)
     try:
         await client.connect(ip, port)
-        return await asyncio.wait_for(client.work(), timeout=5)
-    except Exception as e:
+        # Use a timeout to prevent waiting forever on an unresponsive peer
+        metadata = await asyncio.wait_for(client.work(), timeout=15)
+        return metadata
+    except Exception:
+        # This will catch timeouts, connection errors, etc.
+        return None
+    finally:
         client.close()
-        return False

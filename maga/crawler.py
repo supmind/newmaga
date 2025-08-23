@@ -10,6 +10,7 @@ from socket import inet_ntoa
 from struct import unpack
 
 import bencode2 as bencoder
+import logging
 
 from . import utils
 from . import constants
@@ -18,16 +19,34 @@ from . import constants
 __version__ = '3.0.0'
 
 
-class KRPCProtocol(asyncio.DatagramProtocol):
-    def __init__(self, loop=None):
+class Maga(asyncio.DatagramProtocol):
+    def __init__(self, loop=None, bootstrap_nodes=constants.BOOTSTRAP_NODES, interval=1, handler=None):
+        self.node_id = utils.random_node_id()
         self.transport = None
         self.loop = loop or asyncio.get_event_loop()
+        self.handler = handler or self._default_handler
+        self.log = logging.getLogger("Crawler")
+
+        resolved_bootstrap_nodes = []
+        for host, port in bootstrap_nodes:
+            try:
+                ip = socket.gethostbyname(host)
+                resolved_bootstrap_nodes.append((ip, port))
+            except socket.gaierror:
+                pass
+        self.bootstrap_nodes = tuple(resolved_bootstrap_nodes)
+
+        self.__running = False
+        self.interval = interval
+        self.find_nodes_task = None
 
     def connection_made(self, transport):
         self.transport = transport
 
     def connection_lost(self, exc):
         self.transport.close()
+        self.__running = False
+        super().connection_lost(exc)
 
     def datagram_received(self, data, addr):
         try:
@@ -62,61 +81,33 @@ class KRPCProtocol(asyncio.DatagramProtocol):
                 self.handle_query(msg, addr=addr), loop=self.loop
             )
 
-    def handle_response(self, msg, addr):
-        pass
-
-    async def handle_query(self, msg, addr):
-        pass
-
-
-class Maga(KRPCProtocol):
-    def __init__(self, loop=None, bootstrap_nodes=constants.BOOTSTRAP_NODES, interval=1):
-        super().__init__(loop)
-        self.node_id = utils.random_node_id()
-
-        resolved_bootstrap_nodes = []
-        for host, port in bootstrap_nodes:
-            try:
-                ip = socket.gethostbyname(host)
-                resolved_bootstrap_nodes.append((ip, port))
-            except socket.gaierror:
-                pass
-        self.bootstrap_nodes = tuple(resolved_bootstrap_nodes)
-
-        self.__running = False
-        self.interval = interval
-
     def stop(self):
         self.__running = False
-        self.loop.call_later(self.interval, self.loop.stop)
+        if self.find_nodes_task:
+            self.find_nodes_task.cancel()
+        if self.transport:
+            self.transport.close()
 
     async def auto_find_nodes(self):
         self.__running = True
         while self.__running:
-            await asyncio.sleep(self.interval)
-            for node in self.bootstrap_nodes:
-                self.find_node(addr=node)
+            try:
+                await asyncio.sleep(self.interval)
+                for node in self.bootstrap_nodes:
+                    self.find_node(addr=node)
+            except Exception:
+                self.log.exception("Error in Crawler auto_find_nodes loop")
 
-    def run(self, port=6881):
-        coro = self.loop.create_datagram_endpoint(
+    async def run(self, port=6881):
+        _, _ = await self.loop.create_datagram_endpoint(
                 lambda: self, local_addr=('0.0.0.0', port)
         )
-        transport, _ = self.loop.run_until_complete(coro)
-
-        for signame in ('SIGINT', 'SIGTERM'):
-            try:
-                self.loop.add_signal_handler(getattr(signal, signame), self.stop)
-            except NotImplementedError:
-                # SIGINT and SIGTERM are not implemented on windows
-                pass
 
         for node in self.bootstrap_nodes:
             # Bootstrap
             self.find_node(addr=node, node_id=self.node_id)
 
-        asyncio.ensure_future(self.auto_find_nodes(), loop=self.loop)
-        self.loop.run_forever()
-        self.loop.close()
+        self.find_nodes_task = asyncio.ensure_future(self.auto_find_nodes(), loop=self.loop)
 
     def handle_response(self, msg, addr):
         if constants.KRPC_R in msg:
@@ -126,12 +117,15 @@ class Maga(KRPCProtocol):
                     self.ping(addr=(ip, port))
 
     async def handle_query(self, msg, addr):
-        args = msg[constants.KRPC_A]
-        node_id = args[constants.KRPC_ID]
-        query_type = msg[constants.KRPC_Q]
+        args = msg.get(constants.KRPC_A, {})
+        node_id = args.get(constants.KRPC_ID)
+        query_type = msg.get(constants.KRPC_Q)
+
+        if not all([node_id, query_type]):
+            return
+
         if query_type == constants.KRPC_GET_PEERS:
             infohash = args[constants.KRPC_INFO_HASH]
-            infohash = utils.proper_infohash(infohash)
             token = infohash[:2]
             self.send_message({
                 constants.KRPC_T: msg[constants.KRPC_T],
@@ -142,7 +136,6 @@ class Maga(KRPCProtocol):
                     constants.KRPC_TOKEN: token
                 }
             }, addr=addr)
-            await self.handle_get_peers(infohash, addr)
         elif query_type == constants.KRPC_ANNOUNCE_PEER:
             infohash = args[constants.KRPC_INFO_HASH]
             tid = msg[constants.KRPC_T]
@@ -153,13 +146,16 @@ class Maga(KRPCProtocol):
                     constants.KRPC_ID: self.fake_node_id(node_id)
                 }
             }, addr=addr)
+
             if args.get(constants.KRPC_IMPLIED_PORT, 0) != 0:
                 peer_port = addr[1]
             else:
                 peer_port = args[constants.KRPC_PORT]
             peer_addr = (addr[0], peer_port)
-            await self.handle_announce_peer(
-                utils.proper_infohash(infohash), addr, peer_addr
+
+            asyncio.ensure_future(
+                self.handler(infohash, peer_addr),
+                loop=self.loop
             )
         elif query_type == constants.KRPC_FIND_NODE:
             tid = msg[constants.KRPC_T]
@@ -173,12 +169,13 @@ class Maga(KRPCProtocol):
             }, addr=addr)
         elif query_type == constants.KRPC_PING:
             self.send_message({
-                constants.KRPC_T: constants.KRPC_DEFAULT_TID,
+                constants.KRPC_T: msg[constants.KRPC_T],
                 constants.KRPC_Y: constants.KRPC_RESPONSE,
                 constants.KRPC_R: {
                     constants.KRPC_ID: self.fake_node_id(node_id)
                 }
             }, addr=addr)
+
         self.find_node(addr=addr, node_id=node_id)
 
     def ping(self, addr, node_id=None):
@@ -190,10 +187,6 @@ class Maga(KRPCProtocol):
                 constants.KRPC_ID: self.fake_node_id(node_id)
             }
         }, addr=addr)
-
-    def connection_lost(self, exc):
-        self.__running = False
-        super().connection_lost(exc)
 
     def fake_node_id(self, node_id=None):
         if node_id:
@@ -213,11 +206,8 @@ class Maga(KRPCProtocol):
             }
         }, addr=addr)
 
-    async def handle_get_peers(self, infohash, addr):
-        await self.handler(infohash, addr)
-
-    async def handle_announce_peer(self, infohash, addr, peer_addr):
-        await self.handler(infohash, addr)
-
-    async def handler(self, infohash, addr):
+    async def _default_handler(self, infohash, peer_addr):
+        """
+        Default handler for discovered infohashes. Does nothing.
+        """
         pass

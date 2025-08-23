@@ -1,49 +1,69 @@
-import multiprocessing
+import asyncio
+import signal
+import binascii
 import os
-import time
 
-# We must import libtorrent here to check the version in this process
-try:
-    import libtorrent as lt
-    MAIN_LT_VERSION = lt.version
-except Exception as e:
-    MAIN_LT_VERSION = f"Error importing or getting version in main process: {e}"
+import bencode2 as bencoder
+from maga.crawler import Maga
+from maga.downloader import get_metadata
+
+# 使用一个集合（set）来记录已经处理过的infohash，防止重复下载
+PROCESSED_INFOHASHES = set()
+# 确保保存.torrent文件的目录存在
+os.makedirs("torrents", exist_ok=True)
 
 
-def downloader_service_bootstrap():
-    """
-    This function is the entry point for the downloader service process.
-    It will import the service and run its test.
-    """
-    # This import happens in the child process
-    from screenshot_system.download_service import DownloaderService
+async def main():
+    loop = asyncio.get_running_loop()
 
-    service = DownloaderService()
-    service.run()
+    # 定义当爬虫发现新infohash时的回调函数
+    async def on_infohash_discovered(infohash, peer_addr):
+        infohash_hex = binascii.hexlify(infohash).decode()
+
+        # 如果这个infohash还没有被处理过
+        if infohash_hex not in PROCESSED_INFOHASHES:
+            PROCESSED_INFOHASHES.add(infohash_hex)
+            print(f"[爬虫] 发现: {infohash_hex} | Peer: {peer_addr[0]}:{peer_addr[1]} -> 尝试下载...")
+
+            # 直接调用下载器函数，传入infohash和peer地址
+            metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
+
+            if metadata:
+                # 提取核心信息
+                info = metadata.get(b'info', {})
+                name = info.get(b'name', b'Unknown').decode(errors='ignore')
+
+                # 将元数据保存到.torrent文件
+                file_path = os.path.join("torrents", f"{infohash_hex}.torrent")
+                try:
+                    with open(file_path, "wb") as f:
+                        f.write(bencoder.bencode(metadata))
+                    print(f"[成功] 下载并保存了 '{name}' -> {file_path}")
+                except Exception as e:
+                    print(f"[错误] 保存文件时出错: {e}")
+            else:
+                print(f"[失败] 未能从 {peer_addr[0]} 下载 {infohash_hex}")
+
+    # 创建并运行爬虫
+    crawler = Maga(loop=loop, handler=on_infohash_discovered)
+    await crawler.run(port=6881)
+
+    print("爬虫服务已启动，正在监听 announce_peer 消息...")
+    print("按 Ctrl+C 停止运行。")
+
+    # 等待程序被中断
+    stop = asyncio.Future()
+    loop.add_signal_handler(signal.SIGINT, stop.set_result, None)
+    await stop
+
+    # 优雅地关闭服务
+    print("\n正在停止服务...")
+    crawler.stop()
+    print("服务已停止。")
+
 
 if __name__ == "__main__":
-    print("--- libtorrent Version Test ---")
-    print(f"[Main] libtorrent version in main process: {MAIN_LT_VERSION}")
-
-    # Clean up old log file
-    if os.path.exists('downloader_service.log'):
-        os.remove('downloader_service.log')
-
-    print("[Main] Starting Downloader Service for version test...")
-    downloader_process = multiprocessing.Process(
-        target=downloader_service_bootstrap,
-        daemon=True
-    )
-    downloader_process.start()
-
-    # Wait for the child process to finish its work (logging to the file)
-    print("[Main] Waiting for service process to complete test...")
-    downloader_process.join(timeout=15)
-
-    if downloader_process.is_alive():
-        print("[Main] Test process timed out.")
-        downloader_process.terminate()
-
-    print("\n--- Test Complete ---")
-    print("Please check the contents of the 'downloader_service.log' file for the service's version report.")
-    print("Compare it with the version printed above for the main process.")
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
