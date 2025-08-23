@@ -111,8 +111,19 @@ class DownloaderService:
                             self.result_dict[('metadata', infohash)] = metadata
 
                 elif isinstance(alert, lt.torrent_status_alert):
-                    # Periodically, we can log status of torrents
-                    pass
+                    s = alert.status
+                    h = alert.handle
+                    if h.is_valid():
+                        infohash = str(h.info_hash()).upper()
+                        state_str = [
+                            'queued', 'checking', 'downloading metadata',
+                            'downloading', 'finished', 'seeding', 'allocating',
+                            'checking fastresume'
+                        ]
+                        log(infohash,
+                            f"State: {state_str[s.state]}, "
+                            f"Peers: {s.num_peers}, Seeds: {s.num_seeds}, "
+                            f"Progress: {s.progress * 100:.2f}%")
 
             # 3. Process the read queue
             if self.read_queue:
