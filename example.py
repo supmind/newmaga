@@ -23,11 +23,11 @@ async def main():
         # 如果这个infohash还没有被处理过
         if infohash_hex not in PROCESSED_INFOHASHES:
             PROCESSED_INFOHASHES.add(infohash_hex)
-            print(f"[爬虫] 发现: {infohash_hex} | Peer: {peer_addr[0]}:{peer_addr[1]} -> 尝试下载...")
 
             # 直接调用下载器函数，传入infohash和peer地址
             metadata = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop)
 
+            # 只有在成功获取到元数据时才打印信息
             if metadata:
                 # 提取核心信息
                 info = metadata.get(b'info', {})
@@ -38,17 +38,17 @@ async def main():
                 try:
                     with open(file_path, "wb") as f:
                         f.write(bencoder.bencode(metadata))
-                    print(f"[成功] 下载并保存了 '{name}' -> {file_path}")
+                    print(f"[下载成功] '{name}' ({infohash_hex}) -> 已保存到 {file_path}")
                 except Exception as e:
-                    print(f"[错误] 保存文件时出错: {e}")
-            else:
-                print(f"[失败] 未能从 {peer_addr[0]} 下载 {infohash_hex}")
+                    # 仅在保存失败时打印错误，下载失败保持静默
+                    print(f"[保存失败] {infohash_hex} -> {e}")
 
     # 创建并运行爬虫
     crawler = Maga(loop=loop, handler=on_infohash_discovered)
     await crawler.run(port=6881)
 
-    print("爬虫服务已启动，正在监听 announce_peer 消息...")
+    print("服务已启动，正在后台监听和下载...")
+    print("只有成功下载的种子才会被打印出来。")
     print("按 Ctrl+C 停止运行。")
 
     # 等待程序被中断
