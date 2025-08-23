@@ -43,7 +43,9 @@ def run_screenshot_task(infohash: str, metadata: dict, target_file_index: int, f
     print(f"[Worker:{worker_id}]   - File Size: {file_size}")
     try:
         # Tell the service to start managing this torrent
+        print(f"[Worker:{worker_id}] Sending 'add_torrent' request to service...")
         request_queue.put(('add_torrent', (infohash, metadata)))
+        print(f"[Worker:{worker_id}] Request sent. Initializing IO adapter...")
 
         # The IO adapter uses the downloader service via the queues
         io_adapter = TorrentFileIO(infohash, metadata, target_file_index, file_size, request_queue, result_dict)
