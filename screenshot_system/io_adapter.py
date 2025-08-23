@@ -15,7 +15,7 @@ class TorrentFileIO(io.RawIOBase):
         if not self._piece_length:
             raise IOError(f"Failed to get torrent metadata for {self.infohash}")
 
-    def _get_piece_length(self, timeout=60):
+    def _get_piece_length(self, timeout=300): # 5 minutes
         """
         Gets the piece length for the torrent by requesting metadata from the service.
         """
