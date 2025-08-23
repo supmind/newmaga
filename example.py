@@ -31,15 +31,18 @@ def classify_torrent(name):
     return None
 # --- End of Classification System ---
 
-def run_screenshot_task(infohash: str, target_file_index: int, file_size: int, stats_queue, request_queue, result_dict):
+def run_screenshot_task(infohash: str, metadata: dict, target_file_index: int, file_size: int, stats_queue, request_queue, result_dict):
     """
     This process is self-contained. It creates its own downloader
     and handles one torrent from start to finish.
     """
     print(f"[Worker:{os.getpid()}] Started for {infohash}")
     try:
+        # Tell the service to start managing this torrent
+        request_queue.put(('add_torrent', (infohash, metadata)))
+
         # The IO adapter uses the downloader service via the queues
-        io_adapter = TorrentFileIO(infohash, target_file_index, file_size, request_queue, result_dict)
+        io_adapter = TorrentFileIO(infohash, metadata, target_file_index, file_size, request_queue, result_dict)
         create_screenshots_from_stream(io_adapter, infohash, stats_queue)
     except Exception as e:
         print(f"[Worker:{os.getpid()}] Unhandled error for {infohash}: {e}")
@@ -106,6 +109,7 @@ class Crawler(Maga):
             print(f"[Crawler] Handing off task for {infohash}")
             args = (
                 infohash,
+                metadata,
                 target_file_index,
                 largest_size,
                 self.stats_queue,

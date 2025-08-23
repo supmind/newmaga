@@ -1,34 +1,24 @@
 import io
-import os
 import time
+import bencode2 as bencoder
 
 class TorrentFileIO(io.RawIOBase):
-    def __init__(self, infohash: str, file_index: int, file_size: int, request_queue, result_dict):
+    def __init__(self, infohash: str, metadata: dict, file_index: int, file_size: int, request_queue, result_dict):
         self.infohash = infohash.upper()
+        self.metadata = metadata
         self.file_index = file_index
         self.file_size = file_size
         self.request_queue = request_queue
         self.result_dict = result_dict
 
         self.pos = 0
-        self._piece_length = self._get_piece_length()
-        if not self._piece_length:
-            raise IOError(f"Failed to get torrent metadata for {self.infohash}")
 
-    def _get_piece_length(self, timeout=300): # 5 minutes
-        """
-        Gets the piece length for the torrent by requesting metadata from the service.
-        """
-        self.request_queue.put(('get_metadata', self.infohash))
-
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            metadata = self.result_dict.get(('metadata', self.infohash))
-            if metadata:
-                return metadata['piece_length']
-            time.sleep(0.5)
-        return None
-
+        # Get piece length directly from the metadata
+        try:
+            # The metadata dict is the 'info' dict from the torrent.
+            self._piece_length = self.metadata[b'piece length']
+        except KeyError:
+            raise IOError(f"Invalid metadata for {self.infohash}: 'piece length' not found.")
 
     def readable(self):
         return True
@@ -64,21 +54,34 @@ class TorrentFileIO(io.RawIOBase):
 
         pieces_needed = range(start_piece, end_piece + 1)
 
+        # Request all pieces we don't have from the service
         for piece_index in pieces_needed:
-            if (self.infohash, piece_index) not in self.result_dict:
+            key = ('piece', self.infohash, piece_index)
+            if key not in self.result_dict:
                 self.request_queue.put(('get_piece', (self.infohash, piece_index)))
 
+        # Wait for all pieces to be downloaded
         all_pieces_data = {}
         for piece_index in pieces_needed:
-            data = self._wait_for_piece(piece_index, timeout=1800)
+            data = self._wait_for_piece(piece_index, timeout=1800) # 30 min timeout per piece
             if not data:
-                return b''
+                print(f"[{self.infohash}][IO] FATAL: Timeout or error waiting for piece {piece_index}")
+                return b'' # Failed to get a piece
             all_pieces_data[piece_index] = data
 
+        # Stitch pieces together
         full_chunk = b"".join(all_pieces_data[i] for i in sorted(all_pieces_data.keys()))
 
+        # Slice the final result from the stitched chunk
         final_start = start_piece_offset
         final_end = final_start + read_size
+
+        # Check if the stitched chunk is long enough
+        if len(full_chunk) < final_end:
+             print(f"[{self.infohash}][IO] FATAL: Stitched chunk is too small. "
+                   f"Needed {final_end} bytes, got {len(full_chunk)}.")
+             return b''
+
         result = full_chunk[final_start:final_end]
 
         self.pos += len(result)
@@ -88,15 +91,13 @@ class TorrentFileIO(io.RawIOBase):
         start_time = time.time()
         key = ('piece', self.infohash, piece_index)
 
-        # First check if it's already there
-        data = self.result_dict.get(key)
-        if data:
-            return data
-
-        # If not, wait for it
         while time.time() - start_time < timeout:
             data = self.result_dict.get(key)
-            if data:
+            if data is not None:
+                # Remove the piece from the dict to save memory
+                # This assumes a piece is only ever needed once per read() call
+                # which is a reasonable assumption.
+                del self.result_dict[key]
                 return data
             time.sleep(0.2)
         return None

@@ -1,21 +1,17 @@
 import libtorrent as lt
 import time
 import collections
+import bencode2 as bencoder
 
 def log(infohash, message):
     """Helper for consistent logging."""
     print(f"[{infohash}][Service] {message}")
 
 class DownloaderService:
-    """
-    A long-running service that manages a single libtorrent session
-    and downloads pieces on behalf of multiple worker processes.
-    """
     def __init__(self, request_queue, result_dict):
         log("SERVICE", "Initializing downloader service...")
         settings = lt.high_performance_seed()
         settings['listen_interfaces'] = '0.0.0.0:0'
-        # More alerts can be useful for debugging
         settings['alert_mask'] = (
             lt.alert_category.status |
             lt.alert_category.storage |
@@ -32,21 +28,29 @@ class DownloaderService:
         self.request_queue = request_queue
         self.result_dict = result_dict
         self.handles = {} # infohash -> handle
-        # A queue of pieces we need to read from libtorrent's cache
         self.read_queue = collections.deque()
         log("SERVICE", "Downloader service initialized.")
 
-    def add_torrent(self, infohash):
-        """Adds a new torrent to the session for monitoring."""
+    def add_torrent_with_metadata(self, infohash, metadata):
+        """Adds a new torrent using its complete metadata."""
         if infohash in self.handles:
             return
-        log(infohash, "Adding to session.")
-        params = {
-            'save_path': '/tmp/',
-            'storage_mode': lt.storage_mode_t(2), # storage_mode_sparse
-        }
-        handle = lt.add_magnet_uri(self.ses, f"magnet:?xt=urn:btih:{infohash}", params)
-        self.handles[infohash] = handle
+        log(infohash, "Adding to session with metadata.")
+
+        # We need to create a torrent_info object from the metadata dict
+        try:
+            info_bencoded = bencoder.bencode(metadata)
+            ti = lt.torrent_info(info_bencoded)
+
+            params = {
+                'ti': ti,
+                'save_path': '/tmp/',
+                'storage_mode': lt.storage_mode_t(2), # storage_mode_sparse
+            }
+            handle = self.ses.add_torrent(params)
+            self.handles[infohash] = handle
+        except Exception as e:
+            log(infohash, f"Error adding torrent with metadata: {e}")
 
     def run(self):
         """The main event loop for the service."""
@@ -56,15 +60,15 @@ class DownloaderService:
             while not self.request_queue.empty():
                 req_type, payload = self.request_queue.get()
 
-                if req_type == 'get_metadata':
-                    infohash = payload
-                    if infohash not in self.handles:
-                        self.add_torrent(infohash)
+                if req_type == 'add_torrent':
+                    infohash, metadata = payload
+                    self.add_torrent_with_metadata(infohash, metadata)
 
                 elif req_type == 'get_piece':
                     infohash, piece_index = payload
                     if infohash not in self.handles:
-                        self.add_torrent(infohash)
+                        log(infohash, f"Warning: Piece {piece_index} requested before torrent was added.")
+                        continue
 
                     handle = self.handles[infohash]
                     if handle.is_valid():
@@ -80,8 +84,6 @@ class DownloaderService:
                         infohash = str(h.info_hash()).upper()
                         piece_index = alert.piece_index
                         log(infohash, f"Finished downloading piece {piece_index}. Queueing for read.")
-                        # Don't read the piece here, just queue the request.
-                        # Reading is a blocking call.
                         self.read_queue.append((infohash, piece_index))
 
                 elif isinstance(alert, lt.read_piece_alert):
@@ -90,25 +92,10 @@ class DownloaderService:
                         infohash = str(h.info_hash()).upper()
                         piece_index = alert.piece
                         log(infohash, f"Successfully read piece {piece_index} from cache.")
-                        # Store the data in the shared results dictionary
                         key = ('piece', infohash, piece_index)
                         self.result_dict[key] = bytes(alert.buffer)
                     elif alert.error:
                         log(str(h.info_hash()).upper(), f"Failed to read piece {alert.piece}: {alert.error.message()}")
-
-                elif isinstance(alert, lt.metadata_received_alert):
-                    h = alert.handle
-                    if h.is_valid():
-                        infohash = str(h.info_hash()).upper()
-                        log(infohash, "Metadata received.")
-                        ti = h.torrent_file()
-                        if ti:
-                            metadata = {
-                                'piece_length': ti.piece_length(),
-                                'num_pieces': ti.num_pieces(),
-                            }
-                            # Store metadata for the IO adapter to use
-                            self.result_dict[('metadata', infohash)] = metadata
 
                 elif isinstance(alert, lt.torrent_status_alert):
                     s = alert.status
@@ -120,6 +107,8 @@ class DownloaderService:
                             'downloading', 'finished', 'seeding', 'allocating',
                             'checking fastresume'
                         ]
+                        # This alert will now be less interesting since we add metadata directly
+                        # but it's useful for seeing download progress.
                         log(infohash,
                             f"State: {state_str[s.state]}, "
                             f"Peers: {s.num_peers}, Seeds: {s.num_seeds}, "
@@ -131,8 +120,6 @@ class DownloaderService:
                 if infohash in self.handles:
                     handle = self.handles[infohash]
                     if handle.is_valid():
-                        # This is a non-blocking call that will result in a
-                        # read_piece_alert later.
                         handle.read_piece(piece_index)
 
             time.sleep(0.1)
