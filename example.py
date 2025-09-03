@@ -30,6 +30,39 @@ def format_bytes(size):
     return f"{size:.2f} {power_labels[n]}B"
 
 
+def contains_mp4(info):
+    """
+    检查种子元数据(info字典)中是否包含.mp4文件。
+    支持单文件和多文件种子。
+    """
+    # 检查多文件种子
+    if b'files' in info and info[b'files']:
+        for file_info in info[b'files']:
+            # file_info[b'path'] 是一个路径段列表，最后一个是文件名
+            if file_info[b'path']:
+                try:
+                    # 获取文件名并解码，忽略解码错误，转为小写进行不区分大小写的比较
+                    filename = file_info[b'path'][-1].decode(errors='ignore').lower()
+                    if filename.endswith('.mp4'):
+                        return True
+                except Exception:
+                    # 如果解码或其他操作失败，则跳过此文件
+                    continue
+    # 检查单文件种子
+    elif b'name' in info:
+        try:
+            # 获取文件名并解码，忽略解码错误，转为小写
+            filename = info[b'name'].decode(errors='ignore').lower()
+            if filename.endswith('.mp4'):
+                return True
+        except Exception:
+            # 如果解码失败，则认为不包含
+            return False
+            
+    # 如果遍历完所有文件都未找到.mp4，则返回False
+    return False
+
+
 async def add_task_to_downloader(infohash_hex):
     """异步函数，用于将infohash添加到下载任务"""
     try:
@@ -61,10 +94,7 @@ async def main():
     # 定义当爬虫发现新infohash时的回调函数
     async def on_infohash_discovered(infohash, peer_addr):
         infohash_hex = binascii.hexlify(infohash).decode()
-        # ======================================================
-        # 在此处添加了新功能：将infohash添加到下载任务
-        # ======================================================
-        await add_task_to_downloader(infohash_hex)
+
         # 如果这个infohash还没有被处理过
         if infohash_hex not in PROCESSED_INFOHASHES:
             PROCESSED_INFOHASHES.add(infohash_hex)
@@ -102,7 +132,15 @@ async def main():
                     print(f"  总大小: {format_bytes(total_size)}")
                     print(f"  已保存到: {file_path}")
 
-                    
+                    # ======================================================
+                    # 在此处添加了新功能：检查是否包含 .mp4 文件
+                    # ======================================================
+                    if contains_mp4(info):
+                        print(f"  [检查] 元数据中发现 .mp4 文件, 准备提交任务。")
+                        await add_task_to_downloader(infohash_hex)
+                    else:
+                        print(f"  [检查] 元数据中未发现 .mp4 文件, 跳过任务提交。")
+
 
                     print("=" * 70 + "\n")
 
@@ -112,7 +150,7 @@ async def main():
 
     # 创建并运行爬虫
     crawler = Maga(loop=loop, handler=on_infohash_discovered)
-    await crawler.run(port=6881)
+    await crawler.run(port=6882)
 
     print("服务已启动，正在后台监听和下载...")
     print("只有成功下载的种子才会被打印出来。")
