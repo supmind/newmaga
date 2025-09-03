@@ -3,9 +3,13 @@ import signal
 import binascii
 import os
 
+import aiohttp
 import bencode2 as bencoder
 from maga.crawler import Maga
 from maga.downloader import get_metadata
+
+# API端点，用于添加新任务
+API_URL = "http://47.79.229.105:8000/tasks/"
 
 # 使用一个集合（set）来记录已经处理过的infohash，防止重复下载
 PROCESSED_INFOHASHES = set()
@@ -20,10 +24,35 @@ def format_bytes(size):
     power = 1024
     n = 0
     power_labels = {0: '', 1: 'K', 2: 'M', 3: 'G', 4: 'T'}
-    while size > power and n < len(power_labels) -1 :
+    while size > power and n < len(power_labels) - 1:
         size /= power
         n += 1
     return f"{size:.2f} {power_labels[n]}B"
+
+
+async def add_task_to_downloader(infohash_hex):
+    """异步函数，用于将infohash添加到下载任务"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            # 构建 multipart/form-data 请求体
+            data = aiohttp.FormData()
+            data.add_field('infohash', infohash_hex)
+
+            # 发送POST请求
+            async with session.post(API_URL, data=data) as response:
+                if response.status == 200 or response.status == 201:
+                    print(f"  [API] 成功添加任务: {infohash_hex}")
+                else:
+                    # 打印带有状态码和响应内容的错误信息
+                    response_text = await response.text()
+                    print(f"  [API] 添加任务失败: {infohash_hex}, "
+                          f"状态码: {response.status}, 响应: {response_text}")
+    except aiohttp.ClientError as e:
+        # 捕获网络连接相关的错误
+        print(f"  [API] 请求失败: {infohash_hex} -> {e}")
+    except Exception as e:
+        # 捕获其他未知异常
+        print(f"  [API] 发生未知错误: {infohash_hex} -> {e}")
 
 
 async def main():
@@ -32,7 +61,10 @@ async def main():
     # 定义当爬虫发现新infohash时的回调函数
     async def on_infohash_discovered(infohash, peer_addr):
         infohash_hex = binascii.hexlify(infohash).decode()
-
+        # ======================================================
+        # 在此处添加了新功能：将infohash添加到下载任务
+        # ======================================================
+        await add_task_to_downloader(infohash_hex)
         # 如果这个infohash还没有被处理过
         if infohash_hex not in PROCESSED_INFOHASHES:
             PROCESSED_INFOHASHES.add(infohash_hex)
@@ -63,13 +95,16 @@ async def main():
                         f.write(bencoder.bencode(torrent_dict))
 
                     # 打印摘要
-                    print("="*30 + " 下载成功 " + "="*30)
+                    print("=" * 30 + " 下载成功 " + "=" * 30)
                     print(f"  Infohash: {infohash_hex}")
                     print(f"  文件名: {name}")
                     print(f"  文件数: {num_files}")
                     print(f"  总大小: {format_bytes(total_size)}")
                     print(f"  已保存到: {file_path}")
-                    print("="*70 + "\n")
+
+                    
+
+                    print("=" * 70 + "\n")
 
                 except Exception as e:
                     # 仅在保存失败时打印错误
