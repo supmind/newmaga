@@ -58,31 +58,44 @@ def contains_mp4(info):
         except Exception:
             # 如果解码失败，则认为不包含
             return False
-            
+
     # 如果遍历完所有文件都未找到.mp4，则返回False
     return False
 
 
-async def add_task_to_downloader(infohash_hex):
-    """异步函数，用于将infohash添加到下载任务"""
+async def add_task_to_downloader(infohash_hex, torrent_file_path):
+    """
+    异步函数，用于将infohash和种子文件上传到下载器以添加新任务
+    """
     try:
         async with aiohttp.ClientSession() as session:
             # 构建 multipart/form-data 请求体
             data = aiohttp.FormData()
             data.add_field('infohash', infohash_hex)
+            
+            # 打开并添加种子文件到请求体
+            # aiohttp 会自动处理文件的异步读取
+            with open(torrent_file_path, 'rb') as torrent_file:
+                data.add_field('torrent_file',
+                               torrent_file,
+                               filename=os.path.basename(torrent_file_path),
+                               content_type='application/x-bittorrent')
+            
+                # 发送POST请求
+                async with session.post(API_URL, data=data) as response:
+                    if response.status == 200 or response.status == 201:
+                        print(f"  [API] 成功上传并添加任务: {infohash_hex}")
+                    else:
+                        # 打印带有状态码和响应内容的错误信息
+                        response_text = await response.text()
+                        print(f"  [API] 添加任务失败: {infohash_hex}, "
+                              f"状态码: {response.status}, 响应: {response_text}")
 
-            # 发送POST请求
-            async with session.post(API_URL, data=data) as response:
-                if response.status == 200 or response.status == 201:
-                    print(f"  [API] 成功添加任务: {infohash_hex}")
-                else:
-                    # 打印带有状态码和响应内容的错误信息
-                    response_text = await response.text()
-                    print(f"  [API] 添加任务失败: {infohash_hex}, "
-                          f"状态码: {response.status}, 响应: {response_text}")
     except aiohttp.ClientError as e:
         # 捕获网络连接相关的错误
         print(f"  [API] 请求失败: {infohash_hex} -> {e}")
+    except FileNotFoundError:
+        print(f"  [API] 找不到要上传的种子文件: {torrent_file_path}")
     except Exception as e:
         # 捕获其他未知异常
         print(f"  [API] 发生未知错误: {infohash_hex} -> {e}")
@@ -133,14 +146,14 @@ async def main():
                     print(f"  已保存到: {file_path}")
 
                     # ======================================================
-                    # 在此处添加了新功能：检查是否包含 .mp4 文件
+                    # 检查是否包含 .mp4 文件, 如果包含则提交任务
                     # ======================================================
                     if contains_mp4(info):
                         print(f"  [检查] 元数据中发现 .mp4 文件, 准备提交任务。")
-                        await add_task_to_downloader(infohash_hex)
+                        # 传入infohash和文件路径
+                        await add_task_to_downloader(infohash_hex, file_path)
                     else:
                         print(f"  [检查] 元数据中未发现 .mp4 文件, 跳过任务提交。")
-
 
                     print("=" * 70 + "\n")
 
