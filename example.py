@@ -163,7 +163,7 @@ async def main():
 
     # 创建并运行爬虫
     crawler = Maga(loop=loop, handler=on_infohash_discovered)
-    await crawler.run(port=6882)
+    await crawler.run(port=6981)
 
     print("服务已启动，正在后台监听和下载...")
     print("只有成功下载的种子才会被打印出来。")
