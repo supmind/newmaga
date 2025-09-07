@@ -3,14 +3,21 @@ import signal
 import binascii
 import os
 import collections
+from datetime import datetime
 
 import aiohttp
 import bencode2 as bencoder
+from elasticsearch_async import AsyncElasticsearch
 from maga.crawler import Maga
 from maga.downloader import get_metadata
 
 # API端点，用于添加新任务
 API_URL = "http://47.79.229.105:8000/tasks/"
+
+# Elasticsearch 配置
+ES_HOST = "localhost"
+ES_PORT = 9200
+ES_INDEX_NAME = "torrents"
 
 
 class BoundedSet:
@@ -126,15 +133,87 @@ async def add_task_to_downloader(session, infohash_hex, torrent_file_path):
         print(f"  [API] 发生未知错误: {infohash_hex} -> {e}")
 
 
+async def create_es_index_if_not_exists(es_client):
+    """
+    如果索引不存在，则创建它，并设置好支持中文检索的mapping。
+    """
+    # 检查索引是否存在
+    if not await es_client.indices.exists(index=ES_INDEX_NAME):
+        # 定义索引的mapping
+        mapping = {
+            "mappings": {
+                "properties": {
+                    "infohash": {"type": "keyword"},
+                    "name": {"type": "text", "analyzer": "cjk"},
+                    "files": {
+                        "type": "nested",
+                        "properties": {
+                            "path": {"type": "text", "analyzer": "cjk"},
+                            "length": {"type": "long"}
+                        }
+                    },
+                    "total_size": {"type": "long"},
+                    "created_at": {"type": "date"}
+                }
+            }
+        }
+        try:
+            # 创建索引
+            await es_client.indices.create(index=ES_INDEX_NAME, body=mapping)
+            print(f"[ES] Index '{ES_INDEX_NAME}' created successfully.")
+        except Exception as e:
+            print(f"[ES] Error creating index '{ES_INDEX_NAME}': {e}")
+            # 如果创建失败，可能意味着并发冲突，再检查一次
+            if not await es_client.indices.exists(index=ES_INDEX_NAME):
+                raise e # 如果还是不存在，则抛出异常
+
+
+async def save_metadata_to_es(es_client, infohash_hex, info):
+    """
+    将获取到的元数据格式化并保存到Elasticsearch中。
+    """
+    try:
+        # 准备要索引的文档
+        doc = {
+            'infohash': infohash_hex,
+            'name': info.get(b'name', b'Unknown').decode(errors='ignore'),
+            'created_at': datetime.utcnow()
+        }
+
+        # 处理文件列表和总大小
+        if b'files' in info and info[b'files']:
+            doc['files'] = [
+                {'path': '/'.join([p.decode(errors='ignore') for p in f.get(b'path', [])]), 'length': f.get(b'length', 0)}
+                for f in info[b'files']
+            ]
+            doc['total_size'] = sum(f['length'] for f in doc['files'])
+        else:
+            doc['files'] = []
+            doc['total_size'] = info.get(b'length', 0)
+
+        # 使用infohash作为文档ID，可以避免重复索引
+        await es_client.index(index=ES_INDEX_NAME, id=infohash_hex, body=doc)
+        print(f"  [ES] 成功索引: {infohash_hex}")
+
+    except Exception as e:
+        print(f"  [ES] 索引失败: {infohash_hex} -> {e}")
+
+
 async def main():
     loop = asyncio.get_running_loop()
     # 创建一个信号量，限制并发下载任务为100
     download_semaphore = asyncio.Semaphore(100)
 
-    # 创建一个可复用的 aiohttp.ClientSession
-    async with aiohttp.ClientSession() as session:
+    # 创建一个可复用的 aiohttp.ClientSession 和 AsyncElasticsearch 客户端
+    # 使用 async with 来确保在程序退出时资源被正确关闭
+    async with aiohttp.ClientSession() as session, \
+               AsyncElasticsearch(hosts=[{'host': ES_HOST, 'port': ES_PORT}]) as es_client:
+
+        # 准备Elasticsearch
+        await create_es_index_if_not_exists(es_client)
+
         # 定义当爬虫发现新infohash时的回调函数
-        # 这个函数可以访问外部作用域的 session 和 semaphore 变量
+        # 这个函数可以访问外部作用域的 session, es_client 和 semaphore 变量
         async def on_infohash_discovered(infohash, peer_addr):
             # 使用信号量来控制并发
             async with download_semaphore:
@@ -153,45 +232,48 @@ async def main():
                         # 为了生成一个有效的.torrent文件，我们需要一个顶层的字典
                         torrent_dict = {b'info': info}
 
-                    # 提取核心信息用于打印
-                    name = info.get(b'name', b'Unknown').decode(errors='ignore')
-                    if b'files' in info:
-                        num_files = len(info[b'files'])
-                        total_size = sum(f[b'length'] for f in info[b'files'])
-                    else:
-                        num_files = 1
-                        total_size = info.get(b'length')
-
-                    # 将元数据保存到.torrent文件
-                    file_path = os.path.join("torrents", f"{infohash_hex}.torrent")
-                    try:
-                        with open(file_path, "wb") as f:
-                            # 我们需要对包含info字典的顶层字典进行bencode编码
-                            f.write(bencoder.bencode(torrent_dict))
-
-                        # 打印摘要
-                        print("=" * 30 + " 下载成功 " + "=" * 30)
-                        print(f"  Infohash: {infohash_hex}")
-                        print(f"  文件名: {name}")
-                        print(f"  文件数: {num_files}")
-                        print(f"  总大小: {format_bytes(total_size)}")
-                        print(f"  已保存到: {file_path}")
-
-                        # ======================================================
-                        # 检查是否包含 .mp4 文件, 如果包含则提交任务
-                        # ======================================================
-                        if contains_mp4(info):
-                            print(f"  [检查] 元数据中发现 .mp4 文件, 准备提交任务。")
-                            # 传入infohash、文件路径和共享的session
-                            await add_task_to_downloader(session, infohash_hex, file_path)
+                        # 提取核心信息用于打印
+                        name = info.get(b'name', b'Unknown').decode(errors='ignore')
+                        if b'files' in info:
+                            num_files = len(info[b'files'])
+                            total_size = sum(f[b'length'] for f in info[b'files'])
                         else:
-                            print(f"  [检查] 元数据中未发现 .mp4 文件, 跳过任务提交。")
+                            num_files = 1
+                            total_size = info.get(b'length')
 
-                        print("=" * 70 + "\n")
+                        # 将元数据保存到.torrent文件
+                        file_path = os.path.join("torrents", f"{infohash_hex}.torrent")
+                        try:
+                            with open(file_path, "wb") as f:
+                                # 我们需要对包含info字典的顶层字典进行bencode编码
+                                f.write(bencoder.bencode(torrent_dict))
 
-                    except Exception as e:
-                        # 仅在保存失败时打印错误
-                        print(f"[保存失败] {infohash_hex} -> {e}")
+                            # 打印摘要
+                            print("=" * 30 + " 下载成功 " + "=" * 30)
+                            print(f"  Infohash: {infohash_hex}")
+                            print(f"  文件名: {name}")
+                            print(f"  文件数: {num_files}")
+                            print(f"  总大小: {format_bytes(total_size)}")
+                            print(f"  已保存到: {file_path}")
+
+                            # ======================================================
+                            # 检查是否包含 .mp4 文件, 如果包含则提交任务
+                            # ======================================================
+                            if contains_mp4(info):
+                                print(f"  [检查] 元数据中发现 .mp4 文件, 准备提交任务。")
+                                # 传入infohash、文件路径和共享的session
+                                await add_task_to_downloader(session, infohash_hex, file_path)
+                            else:
+                                print(f"  [检查] 元数据中未发现 .mp4 文件, 跳过任务提交。")
+
+                            print("=" * 70 + "\n")
+
+                        except Exception as e:
+                            # 仅在保存失败时打印错误
+                            print(f"[保存失败] {infohash_hex} -> {e}")
+
+                        # 无论其他操作是否成功，都尝试将元数据保存到Elasticsearch
+                        await save_metadata_to_es(es_client, infohash_hex, info)
 
         # 创建并运行爬虫
         crawler = Maga(loop=loop, handler=on_infohash_discovered)
