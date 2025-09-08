@@ -6,7 +6,7 @@ import collections
 from datetime import datetime
 
 import aiohttp
-import bencode2 as bencoder
+from fastbencode import bencode
 from elasticsearch_async import AsyncElasticsearch
 from maga.crawler import Maga
 from maga.downloader import get_metadata
@@ -18,6 +18,15 @@ API_URL = "http://47.79.229.105:8000/tasks/"
 ES_HOST = "localhost"
 ES_PORT = 9200
 ES_INDEX_NAME = "torrents"
+
+# Peer Checker 配置
+PEER_CHECKER_INTERVAL_SECONDS = 300  # 任务运行间隔
+HIGH_PRIORITY_PEER_THRESHOLD = 50   # 高优层节点数阈值
+HIGH_PRIORITY_TIER_HOURS_AGO = 12   # 高优层检查时间范围
+TRENDING_TIER_HOURS_AGO = 6         # 趋势层检查时间范围
+HIGH_PRIORITY_BATCH_SIZE = 50       # 高优层每批次大小
+TRENDING_BATCH_SIZE = 100           # 趋势层每批次大小
+SWEEP_BATCH_SIZE = 100              # 扫描层每批次大小
 
 
 class BoundedSet:
@@ -153,7 +162,10 @@ async def create_es_index_if_not_exists(es_client):
                         }
                     },
                     "total_size": {"type": "long"},
-                    "created_at": {"type": "date"}
+                    "created_at": {"type": "date"},
+                    "peer_count": {"type": "integer"},
+                    "discovery_count_since_last_check": {"type": "integer"},
+                    "last_checked": {"type": "date"}
                 }
             }
         }
@@ -173,11 +185,15 @@ async def save_metadata_to_es(es_client, infohash_hex, info):
     将获取到的元数据格式化并保存到Elasticsearch中。
     """
     try:
+        now = datetime.utcnow()
         # 准备要索引的文档
         doc = {
             'infohash': infohash_hex,
             'name': info.get(b'name', b'Unknown').decode(errors='ignore'),
-            'created_at': datetime.utcnow()
+            'created_at': now,
+            'peer_count': 0,
+            'discovery_count_since_last_check': 1,
+            'last_checked': now
         }
 
         # 处理文件列表和总大小
@@ -193,16 +209,155 @@ async def save_metadata_to_es(es_client, infohash_hex, info):
 
         # 使用infohash作为文档ID，可以避免重复索引
         await es_client.index(index=ES_INDEX_NAME, id=infohash_hex, body=doc)
-        print(f"  [ES] 成功索引: {infohash_hex}")
+        print(f"  [ES] 成功索引新种子: {infohash_hex}")
 
     except Exception as e:
-        print(f"  [ES] 索引失败: {infohash_hex} -> {e}")
+        print(f"  [ES] 索引新种子失败: {infohash_hex} -> {e}")
+
+
+from datetime import timedelta
+
+async def peer_checker_task(crawler, es_client):
+    """
+    一个后台任务，定期检查种子的节点数并更新其热度。
+    """
+    while True:
+        try:
+            # 每N秒检查一次
+            await asyncio.sleep(PEER_CHECKER_INTERVAL_SECONDS)
+            print("[Peer Checker] 开始检查节点数...")
+
+            now = datetime.utcnow()
+
+            # 1. 高优层查询：获取已知热门，且在N小时内未检查过的种子
+            high_priority_query = {
+                "sort": [{"last_checked": "asc"}],
+                "query": {
+                    "bool": {
+                        "must": [
+                            {"range": {"peer_count": {"gt": HIGH_PRIORITY_PEER_THRESHOLD}}}
+                        ],
+                        "filter": {
+                            "range": {
+                                "last_checked": {
+                                    "lt": (now - timedelta(hours=HIGH_PRIORITY_TIER_HOURS_AGO)).isoformat()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            res = await es_client.search(index=ES_INDEX_NAME, body=high_priority_query, size=HIGH_PRIORITY_BATCH_SIZE)
+            torrents_to_check = res['hits']['hits']
+            if torrents_to_check:
+                print(f"[Peer Checker] 高优层发现 {len(torrents_to_check)} 个种子需要检查。")
+            else:
+                # 2. 趋势层查询：获取最近发现次数最多，且在N小时内未检查过的种子
+                trending_query = {
+                    "sort": [{"discovery_count_since_last_check": "desc"}],
+                    "query": {
+                        "bool": {
+                            "filter": {
+                                "range": {
+                                    "last_checked": {
+                                        "lt": (now - timedelta(hours=TRENDING_TIER_HOURS_AGO)).isoformat()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                res = await es_client.search(index=ES_INDEX_NAME, body=trending_query, size=TRENDING_BATCH_SIZE)
+                torrents_to_check = res['hits']['hits']
+                print(f"[Peer Checker] 趋势层发现 {len(torrents_to_check)} 个种子需要检查。")
+
+            # 3. 如果趋势层和高优层都没有，则启动扫描层
+            if not torrents_to_check:
+                query = {
+                    "sort": [{"last_checked": "asc"}],
+                    "query": {
+                        "match_all": {}
+                    }
+                }
+                res = await es_client.search(index=ES_INDEX_NAME, body=query, size=SWEEP_BATCH_SIZE)
+                torrents_to_check = res['hits']['hits']
+                print(f"[Peer Checker] 扫描层发现 {len(torrents_to_check)} 个种子需要检查。")
+
+            for torrent in torrents_to_check:
+                infohash_hex = torrent['_id']
+                infohash_bytes = binascii.unhexlify(infohash_hex)
+
+                print(f"[Peer Checker] 正在检查: {infohash_hex}")
+                peer_count = await crawler.get_peers_recursive(infohash_bytes)
+
+                # 更新文档
+                update_body = {
+                    "doc": {
+                        "peer_count": peer_count,
+                        "last_checked": datetime.utcnow(),
+                        "discovery_count_since_last_check": 0 # 重置发现计数
+                    }
+                }
+                await es_client.update(index=ES_INDEX_NAME, id=infohash_hex, body=update_body)
+                print(f"[Peer Checker] 更新完毕: {infohash_hex}, 发现 {peer_count} 个节点。")
+
+        except asyncio.CancelledError:
+            print("[Peer Checker] 任务被取消，正在退出...")
+            break
+        except Exception as e:
+            print(f"[Peer Checker] 发生错误: {e}")
+
+
+async def discovery_updater_task(queue, es_client):
+    """
+    消费者任务，从队列中获取infohash并批量更新到Elasticsearch。
+    """
+    while True:
+        try:
+            batch = []
+            # 从队列中获取第一个项目，会在此等待直到有项目可用
+            first_item = await queue.get()
+            batch.append(first_item)
+
+            # 尝试获取更多项目以进行批处理，但不阻塞
+            while len(batch) < 200 and not queue.empty():
+                batch.append(queue.get_nowait())
+
+            # 准备批量更新请求
+            bulk_operations = []
+            for infohash_hex in batch:
+                op = {
+                    "update": {
+                        "_index": ES_INDEX_NAME,
+                        "_id": infohash_hex
+                    }
+                }
+                script = {
+                    "script": {
+                        "source": "ctx._source.discovery_count_since_last_check += 1",
+                        "lang": "painless"
+                    }
+                }
+                bulk_operations.append(op)
+                bulk_operations.append(script)
+
+            if bulk_operations:
+                await es_client.bulk(body=bulk_operations)
+                # print(f"[Discovery Updater] 批量更新了 {len(batch)} 个种子的发现次数。")
+
+        except asyncio.CancelledError:
+            print("[Discovery Updater] 任务被取消，正在退出...")
+            break
+        except Exception as e:
+            print(f"[Discovery Updater] 发生错误: {e}")
 
 
 async def main():
     loop = asyncio.get_running_loop()
     # 创建一个信号量，限制并发下载任务为100
     download_semaphore = asyncio.Semaphore(100)
+    # 创建一个队列，用于解耦发现和数据库更新
+    discovery_queue = asyncio.Queue(maxsize=10000)
 
     # 创建一个可复用的 aiohttp.ClientSession 和 AsyncElasticsearch 客户端
     # 使用 async with 来确保在程序退出时资源被正确关闭
@@ -213,12 +368,18 @@ async def main():
         await create_es_index_if_not_exists(es_client)
 
         # 定义当爬虫发现新infohash时的回调函数
-        # 这个函数可以访问外部作用域的 session, es_client 和 semaphore 变量
+        # 这个函数可以访问外部作用域的 session, es_client, semaphore 和 queue 变量
         async def on_infohash_discovered(infohash, peer_addr):
-            # 使用信号量来控制并发
-            async with download_semaphore:
-                infohash_hex = binascii.hexlify(infohash).decode()
+            infohash_hex = binascii.hexlify(infohash).decode()
 
+            # 生产者：将发现的infohash放入队列，这是一个非阻塞操作
+            try:
+                discovery_queue.put_nowait(infohash_hex)
+            except asyncio.QueueFull:
+                pass  # 如果队列满了，暂时丢弃，避免阻塞
+
+            # 使用信号量来控制并发，仅对新种子进行元数据下载
+            async with download_semaphore:
                 # 如果这个infohash还没有被处理过
                 if infohash_hex not in PROCESSED_INFOHASHES:
                     PROCESSED_INFOHASHES.add(infohash_hex)
@@ -246,7 +407,7 @@ async def main():
                         try:
                             with open(file_path, "wb") as f:
                                 # 我们需要对包含info字典的顶层字典进行bencode编码
-                                f.write(bencoder.bencode(torrent_dict))
+                                f.write(bencode(torrent_dict))
 
                             # 打印摘要
                             print("=" * 30 + " 下载成功 " + "=" * 30)
@@ -279,6 +440,11 @@ async def main():
         crawler = Maga(loop=loop, handler=on_infohash_discovered)
         await crawler.run(port=6981)
 
+        # 启动后台任务
+        checker_task = asyncio.create_task(peer_checker_task(crawler, es_client))
+        updater_task = asyncio.create_task(discovery_updater_task(discovery_queue, es_client))
+        print("后台任务（节点检查、发现次数更新）已启动。")
+
         print("服务已启动，正在后台监听和下载...")
         print("只有成功下载的种子才会被打印出来。")
         print("按 Ctrl+C 停止运行。")
@@ -290,7 +456,10 @@ async def main():
 
         # 优雅地关闭服务
         print("\n正在停止服务...")
+        checker_task.cancel()
+        updater_task.cancel()
         crawler.stop()
+        await asyncio.gather(checker_task, updater_task, return_exceptions=True)
         print("服务已停止。")
 
 

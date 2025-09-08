@@ -1,5 +1,7 @@
-bencode2
+fastbencode
 uvloop
 av
 aiohttp
 elasticsearch-async
+pytest
+pytest-asyncio

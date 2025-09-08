@@ -31,11 +31,12 @@ KRPC_PORT = b"port"
 KRPC_IMPLIED_PORT = b"implied_port"
 KRPC_TOKEN = b"token"
 KRPC_TARGET = b"target"
+KRPC_VALUES = b"values"
 
 # Default transaction ID
 KRPC_DEFAULT_TID = b"tt"
 KRPC_FIND_NODE_TID = b"fn"
-KRPC_PING_TID = "pg"
+KRPC_PING_TID = b"pg"
 
 # Error message
 KRPC_SERVER_ERROR = [202, "Server Error"]
