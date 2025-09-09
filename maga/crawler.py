@@ -266,9 +266,8 @@ class Maga(asyncio.DatagramProtocol):
         future = self.loop.create_future()
         self._pending_queries[tid] = future
 
-        self.send_message(query_data, addr)
-
         try:
+            self.send_message(query_data, addr)
             return await asyncio.wait_for(future, timeout)
         except asyncio.TimeoutError:
             return None
