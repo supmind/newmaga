@@ -89,7 +89,7 @@ async def main(args):
         return
 
     crawler = TestCrawler()
-    await crawler.run(port=0)
+    await crawler.run(port=6881)
     logging.info("Crawler started. Warming up routing table for 60 seconds...")
 
     try:
@@ -114,7 +114,7 @@ async def main(args):
 
     # --- Perform Test ---
     start_time = time.monotonic()
-    found_peers = await perform_multi_hop_get_peers(crawler, infohash, starting_node_addrs, max_hops=3)
+    found_peers = await perform_multi_hop_get_peers(crawler, infohash, starting_node_addrs, max_hops=4)
     end_time = time.monotonic()
     duration = end_time - start_time
 
