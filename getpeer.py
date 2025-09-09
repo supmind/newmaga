@@ -4,6 +4,7 @@ import random
 import signal
 import argparse
 import binascii
+import time
 
 from maga.crawler import Maga
 from maga import utils
@@ -20,11 +21,11 @@ class TestCrawler(Maga):
     async def handle_announce_peer(self, infohash, addr, peer_addr):
         pass
 
-async def perform_two_hop_get_peers(crawler: Maga, infohash: bytes, starting_nodes: list):
+async def perform_multi_hop_get_peers(crawler: Maga, infohash: bytes, starting_nodes: list, max_hops: int):
     """
-    Manually performs a two-hop get_peers query starting from a given set of nodes.
+    Manually performs a multi-hop get_peers query starting from a given set of nodes.
     """
-    logging.info(f"Starting two-hop get_peers for infohash: {binascii.hexlify(infohash).decode()}")
+    logging.info(f"Starting {max_hops}-hop get_peers for infohash: {binascii.hexlify(infohash).decode()}")
     logging.info(f"Starting with {len(starting_nodes)} random nodes.")
 
     found_peers = set()
@@ -32,7 +33,7 @@ async def perform_two_hop_get_peers(crawler: Maga, infohash: bytes, starting_nod
     
     nodes_to_query = starting_nodes
     
-    for hop in range(1, 3): # Two hops
+    for hop in range(1, max_hops + 1):
         if not nodes_to_query:
             logging.info(f"Hop {hop}: No new nodes to query. Stopping.")
             break
@@ -82,9 +83,9 @@ async def main(args):
     loop = asyncio.get_running_loop()
 
     try:
-        infohash = binascii.unhexlify(args)
+        infohash = binascii.unhexlify(args.infohash)
     except (ValueError, TypeError):
-        logging.error(f"Invalid infohash provided: {args}")
+        logging.error(f"Invalid infohash provided: {args.infohash}")
         return
 
     crawler = TestCrawler()
@@ -112,14 +113,18 @@ async def main(args):
     starting_node_addrs = [node['addr'] for node in starting_nodes_full]
 
     # --- Perform Test ---
-    found_peers = await perform_two_hop_get_peers(crawler, infohash, starting_node_addrs)
+    start_time = time.monotonic()
+    found_peers = await perform_multi_hop_get_peers(crawler, infohash, starting_node_addrs, max_hops=3)
+    end_time = time.monotonic()
+    duration = end_time - start_time
 
     logging.info("="*20 + " Test Complete " + "="*20)
-    logging.info(f"Query for infohash {args} finished.")
+    logging.info(f"Query for infohash {args.infohash} finished.")
     logging.info(f"Total unique peers found: {len(found_peers)}")
+    logging.info(f"Total time taken for query: {duration:.2f} seconds")
     if found_peers:
         logging.info("Some of the peers found:")
-        for peer in list(found_peers)[:5]: # Print first 5
+        for peer in list(found_peers)[:5]:
              logging.info(f"  - {peer[0]}:{peer[1]}")
     logging.info("="*55)
     
@@ -128,9 +133,11 @@ async def main(args):
     crawler.stop()
 
 if __name__ == "__main__":
-    infohash = "177E05AC445B2F67A0898A14AA9238CF754FC22C"
+    parser = argparse.ArgumentParser(description="Test get_peers functionality of the DHT crawler.")
+    parser.add_argument("infohash", type=str, help="The infohash to query for (in hex format).")
+    args = parser.parse_args()
 
     try:
-        asyncio.run(main(infohash))
+        asyncio.run(main(args))
     except KeyboardInterrupt:
         logging.info("\nScript interrupted by user.")
