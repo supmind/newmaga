@@ -34,7 +34,7 @@ async def main():
     crawler = InfohashCrawler()
     
     # 在一个随机可用端口上运行爬虫
-    await crawler.run(port=0)
+    await crawler.run(port=6881)
     logging.info("爬虫正在运行。按 Ctrl+C 停止。")
 
     # 设置信号处理程序以实现优雅关闭
