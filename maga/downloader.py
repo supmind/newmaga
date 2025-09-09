@@ -67,9 +67,16 @@ class WirePeerClient:
             if self.writer:
                 self.writer.close()
                 await self.writer.wait_closed()
-            self.pieces = None
-        except:
+        except Exception:
+            # It's better to log this error than to swallow it silently,
+            # but for now, we'll just pass.
             pass
+        finally:
+            # Manually break all potential reference cycles to ensure GC
+            self.writer = None
+            self.reader = None
+            self.pieces = None
+            self.loop = None
 
     def check_handshake(self, data):
         if data[:20] != BT_HEADER[:20]:
