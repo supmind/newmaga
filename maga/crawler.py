@@ -85,27 +85,37 @@ class Maga(asyncio.DatagramProtocol):
         if msg_type == constants.KRPC_ERROR:
             return
 
+        node_id = None
         try:
             node_id = msg[constants.KRPC_A][constants.KRPC_ID]
             task = asyncio.ensure_future(self._add_node(node_id, addr), loop=self.loop)
             self.background_tasks.add(task)
             task.add_done_callback(self.background_tasks.discard)
         except KeyError:
-            # This happens on response messages, where the node ID is not present
-            # in the top-level 'a' dictionary. We handle this by finding the node
-            # by its address and updating its last_seen time.
-            for bucket in self.k_buckets:
-                node = next((n for n in bucket if n["addr"] == addr), None)
-                if node:
-                    node["last_seen"] = datetime.now(timezone.utc)
-                    bucket.remove(node)
-                    bucket.append(node)
-                    break
+            # This can happen on response messages.
+            # We find the node by its address and update its last_seen time.
+            if msg_type == constants.KRPC_RESPONSE:
+                for bucket in self.k_buckets:
+                    node = next((n for n in bucket if n["addr"] == addr), None)
+                    if node:
+                        node["last_seen"] = datetime.now(timezone.utc)
+                        bucket.remove(node)
+                        bucket.append(node)
+                        break
 
         if msg_type == constants.KRPC_RESPONSE:
-            return self.handle_response(msg, addr)
+            tid = msg.get(constants.KRPC_T)
+            r_args = msg.get(constants.KRPC_R, {})
+            # The original `msg` object is now out of scope and can be collected.
+            return self.handle_response(tid, r_args, addr)
         elif msg_type == constants.KRPC_QUERY:
-            task = asyncio.ensure_future(self.handle_query(msg, addr), loop=self.loop)
+            tid = msg.get(constants.KRPC_T)
+            q_type = msg.get(constants.KRPC_Q)
+            a_args = msg.get(constants.KRPC_A, {})
+            # The original `msg` object is now out of scope and can be collected.
+            task = asyncio.ensure_future(
+                self.handle_query(tid, q_type, a_args, addr), loop=self.loop
+            )
             self.background_tasks.add(task)
             task.add_done_callback(self.background_tasks.discard)
             return task
@@ -141,44 +151,38 @@ class Maga(asyncio.DatagramProtocol):
         task.add_done_callback(self.background_tasks.discard)
         self.find_nodes_task = task
 
-    def handle_response(self, msg, addr):
-        # A response from a node we know about is a good sign
-        for bucket in self.k_buckets:
-            node = next((n for n in bucket if n["addr"] == addr), None)
-            if node:
-                node["response_count"] += 1
-                break
+    def handle_response(self, tid, r_args, addr):
+        # A response from a node we know about is a good sign.
+        # This is already handled in handle_message, so we don't need to repeat it.
 
-        tid = msg.get(constants.KRPC_T)
         if tid in self._pending_queries:
-            # The future is just waiting for any valid response, not a specific one
-            # The caller will be responsible for parsing the response
+            # The future is just waiting for any valid response, not a specific one.
+            # The caller will be responsible for parsing the response.
             future = self._pending_queries.pop(tid)
-            future.set_result(msg)
+            # We pass the smaller `r_args` dict, not the whole `msg`.
+            future.set_result(r_args)
             return
 
         # In addition to our own queries, we also learn about new nodes
         # from other nodes' responses to us.
-        args = msg.get(constants.KRPC_R, {})
-        if constants.KRPC_NODES in args:
-            for node_id, ip, port in utils.split_nodes(args[constants.KRPC_NODES]):
+        if constants.KRPC_NODES in r_args:
+            for node_id, ip, port in utils.split_nodes(r_args[constants.KRPC_NODES]):
                 task = asyncio.ensure_future(self._add_node(node_id, (ip, port)), loop=self.loop)
                 self.background_tasks.add(task)
                 task.add_done_callback(self.background_tasks.discard)
 
-    async def handle_query(self, msg, addr):
-        args = msg.get(constants.KRPC_A, {})
-        node_id = args.get(constants.KRPC_ID)
-        query_type = msg.get(constants.KRPC_Q)
+    async def handle_query(self, tid, q_type, a_args, addr):
+        node_id = a_args.get(constants.KRPC_ID)
+        query_type = q_type
 
         if not all([node_id, query_type]):
             return
 
         if query_type == constants.KRPC_GET_PEERS:
-            infohash = args[constants.KRPC_INFO_HASH]
+            infohash = a_args[constants.KRPC_INFO_HASH]
             token = infohash[:2]
             self.send_message({
-                constants.KRPC_T: msg[constants.KRPC_T],
+                constants.KRPC_T: tid,
                 constants.KRPC_Y: constants.KRPC_RESPONSE,
                 constants.KRPC_R: {
                     constants.KRPC_ID: self.fake_node_id(node_id),
@@ -188,8 +192,7 @@ class Maga(asyncio.DatagramProtocol):
             }, addr=addr)
             await self.handle_get_peers(infohash, addr)
         elif query_type == constants.KRPC_ANNOUNCE_PEER:
-            infohash = args[constants.KRPC_INFO_HASH]
-            tid = msg[constants.KRPC_T]
+            infohash = a_args[constants.KRPC_INFO_HASH]
             self.send_message({
                 constants.KRPC_T: tid,
                 constants.KRPC_Y: constants.KRPC_RESPONSE,
@@ -198,15 +201,14 @@ class Maga(asyncio.DatagramProtocol):
                 }
             }, addr=addr)
 
-            if args.get(constants.KRPC_IMPLIED_PORT, 0) != 0:
+            if a_args.get(constants.KRPC_IMPLIED_PORT, 0) != 0:
                 peer_port = addr[1]
             else:
-                peer_port = args[constants.KRPC_PORT]
+                peer_port = a_args[constants.KRPC_PORT]
             peer_addr = (addr[0], peer_port)
 
             await self.handle_announce_peer(infohash, addr, peer_addr)
         elif query_type == constants.KRPC_FIND_NODE:
-            tid = msg[constants.KRPC_T]
             self.send_message({
                 constants.KRPC_T: tid,
                 constants.KRPC_Y: constants.KRPC_RESPONSE,
@@ -217,7 +219,7 @@ class Maga(asyncio.DatagramProtocol):
             }, addr=addr)
         elif query_type == constants.KRPC_PING:
             self.send_message({
-                constants.KRPC_T: msg[constants.KRPC_T],
+                constants.KRPC_T: tid,
                 constants.KRPC_Y: constants.KRPC_RESPONSE,
                 constants.KRPC_R: {
                     constants.KRPC_ID: self.fake_node_id(node_id)
@@ -305,17 +307,16 @@ class Maga(asyncio.DatagramProtocol):
             responses = await asyncio.gather(*tasks)
 
             new_nodes_found = []
-            for msg in responses:
-                if not msg:
+            for r_args in responses:
+                if not r_args:
                     continue
 
-                args = msg.get(constants.KRPC_R, {})
-                if constants.KRPC_VALUES in args:
-                    for peer in utils.split_peers(args[constants.KRPC_VALUES]):
+                if constants.KRPC_VALUES in r_args:
+                    for peer in utils.split_peers(r_args[constants.KRPC_VALUES]):
                         peers.add(peer)
 
-                if constants.KRPC_NODES in args:
-                    for node_id, ip, port in utils.split_nodes(args[constants.KRPC_NODES]):
+                if constants.KRPC_NODES in r_args:
+                    for node_id, ip, port in utils.split_nodes(r_args[constants.KRPC_NODES]):
                         new_nodes_found.append((ip, port))
 
             if peers:
@@ -334,82 +335,59 @@ class Maga(asyncio.DatagramProtocol):
         return distance.bit_length() - 1
 
     async def _add_node(self, node_id, addr):
-        # This function is refactored to be extremely defensive against
-        # potential reference cycles, which are suspected to be the
-        # cause of a persistent memory leak.
+        bucket_index = self._get_bucket_index(node_id)
+        lock = self.k_bucket_locks[bucket_index]
 
-        # Explicitly initialize all local variables that might hold references
-        lock = None
-        bucket = None
-        lru_node = None
-        response = None
+        async with lock:
+            bucket = self.k_buckets[bucket_index]
 
-        try:
-            bucket_index = self._get_bucket_index(node_id)
-            lock = self.k_bucket_locks[bucket_index]
+            # Check if node already exists by ID
+            existing_node = next((n for n in bucket if n["id"] == node_id), None)
+            if existing_node:
+                # It exists, move it to the end to mark it as most recently seen
+                existing_node["last_seen"] = datetime.now(timezone.utc)
+                bucket.remove(existing_node)
+                bucket.append(existing_node)
+                return
 
-            async with lock:
-                bucket = self.k_buckets[bucket_index]
+            # If bucket is not full, add the new node
+            if len(bucket) < K:
+                bucket.append({
+                    "id": node_id,
+                    "addr": addr,
+                    "last_seen": datetime.now(timezone.utc),
+                    "first_seen": datetime.now(timezone.utc),
+                    "response_count": 0
+                })
+                return
 
-                # Check if node already exists by ID
-                existing_node_found = None
-                for node in bucket:
-                    if node["id"] == node_id:
-                        existing_node_found = node
-                        break
+            # Bucket is full, challenge the least-recently-seen node (at the front)
+            lru_node = bucket[0]
 
-                if existing_node_found:
-                    # It exists, move it to the end to mark it as most recently seen
-                    existing_node_found["last_seen"] = datetime.now(timezone.utc)
-                    bucket.remove(existing_node_found)
-                    bucket.append(existing_node_found)
-                    return
-
-                # If bucket is not full, add the new node
-                if len(bucket) < K:
-                    bucket.append({
-                        "id": node_id,
-                        "addr": addr,
-                        "last_seen": datetime.now(timezone.utc),
-                        "first_seen": datetime.now(timezone.utc),
-                        "response_count": 0
-                    })
-                    return
-
-                # Bucket is full, challenge the least-recently-seen node (at the front)
-                lru_node = bucket[0]
-
-                ping_query = {
-                    constants.KRPC_Y: constants.KRPC_QUERY,
-                    constants.KRPC_Q: constants.KRPC_PING,
-                    constants.KRPC_A: {
-                        constants.KRPC_ID: self.node_id
-                    }
+            ping_query = {
+                constants.KRPC_Y: constants.KRPC_QUERY,
+                constants.KRPC_Q: constants.KRPC_PING,
+                constants.KRPC_A: {
+                    constants.KRPC_ID: self.node_id
                 }
-                response = await self._send_query_and_wait(ping_query, lru_node["addr"], timeout=1)
+            }
+            response = await self._send_query_and_wait(ping_query, lru_node["addr"], timeout=1)
 
-                if response is None:
-                    # Node did not respond, evict it and add the new one
-                    bucket.popleft()
-                    bucket.append({
-                        "id": node_id,
-                        "addr": addr,
-                        "last_seen": datetime.now(timezone.utc),
-                        "first_seen": datetime.now(timezone.utc),
-                        "response_count": 0
-                    })
-                else:
-                    # Node responded, move it to the end and discard the new candidate
-                    lru_node["last_seen"] = datetime.now(timezone.utc)
-                    bucket.remove(lru_node)
-                    bucket.append(lru_node)
-        finally:
-            # Manually break references to help the garbage collector in case
-            # of subtle reference cycles involving this coroutine's frame.
-            lock = None
-            bucket = None
-            lru_node = None
-            response = None
+            if response is None:
+                # Node did not respond, evict it and add the new one
+                bucket.popleft() # popleft is more efficient for deque
+                bucket.append({
+                    "id": node_id,
+                    "addr": addr,
+                    "last_seen": datetime.now(timezone.utc),
+                    "first_seen": datetime.now(timezone.utc),
+                    "response_count": 0
+                })
+            else:
+                # Node responded, move it to the end and discard the new candidate
+                bucket.remove(lru_node)
+                lru_node["last_seen"] = datetime.now(timezone.utc)
+                bucket.append(lru_node)
 
     async def handler(self, infohash, addr, peer_addr=None):
         """
