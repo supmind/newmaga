@@ -67,6 +67,7 @@ class WirePeerClient:
             if self.writer:
                 self.writer.close()
                 await self.writer.wait_closed()
+            self.pieces = None
         except:
             pass
 
