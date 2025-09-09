@@ -4,9 +4,10 @@ import logging
 import signal
 import collections
 import argparse
+import gc
 
 from maga.crawler import Maga
-from maga.downloader import get_metadata
+from maga.downloader import get_metadata, WirePeerClient
 from maga.utils import proper_infohash
 
 # Configure basic logging to see the output from the crawler and this script
@@ -177,11 +178,16 @@ async def print_stats(crawler, task_queue):
     while True:
         await asyncio.sleep(30)
         stats = crawler.get_routing_table_stats()
+
+        # Debugging: Count WirePeerClient instances
+        client_instances = [obj for obj in gc.get_objects() if isinstance(obj, WirePeerClient)]
+
         log.info(
             f"[STATS] DHT Nodes: {stats['total_nodes']} | "
             f"Queue Size: {task_queue.qsize()}/{task_queue.maxsize} | "
             f"Queued Hashes: {len(QUEUED_INFOHASHES.deque)} | "
-            f"Processed Hashes: {len(PROCESSED_INFOHASHES.deque)}"
+            f"Processed Hashes: {len(PROCESSED_INFOHASHES.deque)} | "
+            f"WirePeerClient instances: {len(client_instances)}"
         )
 
 

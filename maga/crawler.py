@@ -12,7 +12,7 @@ from struct import unpack
 from datetime import datetime, timezone
 import random
 import collections
-from .bencode import bencode, bdecode
+from fastbencode import bencode, bdecode
 import logging
 
 from . import utils

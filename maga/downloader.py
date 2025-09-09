@@ -4,7 +4,7 @@ import binascii
 import struct
 import math
 
-from .bencode import bencode, bdecode
+from fastbencode import bencode, bdecode
 from . import utils
 
 
