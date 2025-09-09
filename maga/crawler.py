@@ -352,7 +352,7 @@ class Maga(asyncio.DatagramProtocol):
             # If bucket is not full, add the new node
             if len(bucket) < K:
                 bucket.append({
-                    "id": node_id,
+                    "id": node_id[:],
                     "addr": addr,
                     "last_seen": datetime.now(timezone.utc),
                     "first_seen": datetime.now(timezone.utc),
@@ -376,7 +376,7 @@ class Maga(asyncio.DatagramProtocol):
                 # Node did not respond, evict it and add the new one
                 bucket.popleft() # popleft is more efficient for deque
                 bucket.append({
-                    "id": node_id,
+                    "id": node_id[:],
                     "addr": addr,
                     "last_seen": datetime.now(timezone.utc),
                     "first_seen": datetime.now(timezone.utc),
