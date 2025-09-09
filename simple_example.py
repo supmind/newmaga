@@ -11,7 +11,7 @@ from maga.utils import proper_infohash
 
 # Configure basic logging to see the output from the crawler and this script
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 log = logging.getLogger(__name__)
@@ -178,8 +178,7 @@ async def print_stats(crawler, task_queue):
             f"[STATS] DHT Nodes: {stats['total_nodes']} | "
             f"Queue Size: {task_queue.qsize()}/{task_queue.maxsize} | "
             f"Queued Hashes: {len(QUEUED_INFOHASHES)} | "
-            f"Processed Hashes: {len(PROCESSED_INFOHASHES)} | "
-            f"Pending Queries: {len(crawler._pending_queries)}"
+            f"Processed Hashes: {len(PROCESSED_INFOHASHES)}"
         )
 
 

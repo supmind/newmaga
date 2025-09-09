@@ -145,7 +145,6 @@ class Maga(asyncio.DatagramProtocol):
             # The future is just waiting for any valid response, not a specific one
             # The caller will be responsible for parsing the response
             future = self._pending_queries.pop(tid)
-            self.log.debug(f"PENDING_QUERIES: POP(response) {tid.hex()}")
             future.set_result(msg)
             return
 
@@ -253,7 +252,6 @@ class Maga(asyncio.DatagramProtocol):
 
         future = self.loop.create_future()
         self._pending_queries[tid] = future
-        self.log.debug(f"PENDING_QUERIES: ADD {tid.hex()}")
 
         self.send_message(query_data, addr)
 
@@ -262,8 +260,7 @@ class Maga(asyncio.DatagramProtocol):
         except asyncio.TimeoutError:
             return None
         finally:
-            if self._pending_queries.pop(tid, None):
-                self.log.debug(f"PENDING_QUERIES: POP(timeout) {tid.hex()}")
+            self._pending_queries.pop(tid, None)
 
     async def get_peers_recursive(self, infohash, max_hops=2):
         """
@@ -326,59 +323,82 @@ class Maga(asyncio.DatagramProtocol):
         return distance.bit_length() - 1
 
     async def _add_node(self, node_id, addr):
-        bucket_index = self._get_bucket_index(node_id)
-        lock = self.k_bucket_locks[bucket_index]
+        # This function is refactored to be extremely defensive against
+        # potential reference cycles, which are suspected to be the
+        # cause of a persistent memory leak.
 
-        async with lock:
-            bucket = self.k_buckets[bucket_index]
+        # Explicitly initialize all local variables that might hold references
+        lock = None
+        bucket = None
+        lru_node = None
+        response = None
 
-            # Check if node already exists by ID
-            existing_node = next((n for n in bucket if n["id"] == node_id), None)
-            if existing_node:
-                # It exists, move it to the end to mark it as most recently seen
-                existing_node["last_seen"] = datetime.now(timezone.utc)
-                bucket.remove(existing_node)
-                bucket.append(existing_node)
-                return
+        try:
+            bucket_index = self._get_bucket_index(node_id)
+            lock = self.k_bucket_locks[bucket_index]
 
-            # If bucket is not full, add the new node
-            if len(bucket) < K:
-                bucket.append({
-                    "id": node_id,
-                    "addr": addr,
-                    "last_seen": datetime.now(timezone.utc),
-                    "first_seen": datetime.now(timezone.utc),
-                    "response_count": 0
-                })
-                return
+            async with lock:
+                bucket = self.k_buckets[bucket_index]
 
-            # Bucket is full, challenge the least-recently-seen node (at the front)
-            lru_node = bucket[0]
+                # Check if node already exists by ID
+                existing_node_found = None
+                for node in bucket:
+                    if node["id"] == node_id:
+                        existing_node_found = node
+                        break
 
-            ping_query = {
-                constants.KRPC_Y: constants.KRPC_QUERY,
-                constants.KRPC_Q: constants.KRPC_PING,
-                constants.KRPC_A: {
-                    constants.KRPC_ID: self.node_id
+                if existing_node_found:
+                    # It exists, move it to the end to mark it as most recently seen
+                    existing_node_found["last_seen"] = datetime.now(timezone.utc)
+                    bucket.remove(existing_node_found)
+                    bucket.append(existing_node_found)
+                    return
+
+                # If bucket is not full, add the new node
+                if len(bucket) < K:
+                    bucket.append({
+                        "id": node_id,
+                        "addr": addr,
+                        "last_seen": datetime.now(timezone.utc),
+                        "first_seen": datetime.now(timezone.utc),
+                        "response_count": 0
+                    })
+                    return
+
+                # Bucket is full, challenge the least-recently-seen node (at the front)
+                lru_node = bucket[0]
+
+                ping_query = {
+                    constants.KRPC_Y: constants.KRPC_QUERY,
+                    constants.KRPC_Q: constants.KRPC_PING,
+                    constants.KRPC_A: {
+                        constants.KRPC_ID: self.node_id
+                    }
                 }
-            }
-            response = await self._send_query_and_wait(ping_query, lru_node["addr"], timeout=1)
+                response = await self._send_query_and_wait(ping_query, lru_node["addr"], timeout=1)
 
-            if response is None:
-                # Node did not respond, evict it and add the new one
-                bucket.popleft() # popleft is more efficient for deque
-                bucket.append({
-                    "id": node_id,
-                    "addr": addr,
-                    "last_seen": datetime.now(timezone.utc),
-                    "first_seen": datetime.now(timezone.utc),
-                    "response_count": 0
-                })
-            else:
-                # Node responded, move it to the end and discard the new candidate
-                bucket.remove(lru_node)
-                lru_node["last_seen"] = datetime.now(timezone.utc)
-                bucket.append(lru_node)
+                if response is None:
+                    # Node did not respond, evict it and add the new one
+                    bucket.popleft()
+                    bucket.append({
+                        "id": node_id,
+                        "addr": addr,
+                        "last_seen": datetime.now(timezone.utc),
+                        "first_seen": datetime.now(timezone.utc),
+                        "response_count": 0
+                    })
+                else:
+                    # Node responded, move it to the end and discard the new candidate
+                    lru_node["last_seen"] = datetime.now(timezone.utc)
+                    bucket.remove(lru_node)
+                    bucket.append(lru_node)
+        finally:
+            # Manually break references to help the garbage collector in case
+            # of subtle reference cycles involving this coroutine's frame.
+            lock = None
+            bucket = None
+            lru_node = None
+            response = None
 
     async def handler(self, infohash, addr, peer_addr=None):
         """
