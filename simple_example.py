@@ -11,7 +11,7 @@ from maga.utils import proper_infohash
 
 # Configure basic logging to see the output from the crawler and this script
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 log = logging.getLogger(__name__)
