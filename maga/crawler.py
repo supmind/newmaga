@@ -145,6 +145,7 @@ class Maga(asyncio.DatagramProtocol):
             # The future is just waiting for any valid response, not a specific one
             # The caller will be responsible for parsing the response
             future = self._pending_queries.pop(tid)
+            self.log.debug(f"PENDING_QUERIES: POP(response) {tid.hex()}")
             future.set_result(msg)
             return
 
@@ -252,6 +253,7 @@ class Maga(asyncio.DatagramProtocol):
 
         future = self.loop.create_future()
         self._pending_queries[tid] = future
+        self.log.debug(f"PENDING_QUERIES: ADD {tid.hex()}")
 
         self.send_message(query_data, addr)
 
@@ -260,7 +262,8 @@ class Maga(asyncio.DatagramProtocol):
         except asyncio.TimeoutError:
             return None
         finally:
-            self._pending_queries.pop(tid, None)
+            if self._pending_queries.pop(tid, None):
+                self.log.debug(f"PENDING_QUERIES: POP(timeout) {tid.hex()}")
 
     async def get_peers_recursive(self, infohash, max_hops=2):
         """
