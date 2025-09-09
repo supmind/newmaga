@@ -190,6 +190,10 @@ async def print_stats(crawler, task_queue):
             f"WirePeerClient instances: {len(client_instances)}"
         )
 
+        # If we have leaked clients, print referrers for one of them
+        if client_instances:
+            log.info(f"Referrers of leaked client: {gc.get_referrers(client_instances[0])}")
+
 
 async def main(args):
     """
