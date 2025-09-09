@@ -4,6 +4,7 @@ import logging
 import signal
 import collections
 import argparse
+import tracemalloc
 
 from maga.crawler import Maga
 from maga.downloader import get_metadata
@@ -19,39 +20,36 @@ log = logging.getLogger(__name__)
 
 class BoundedSet:
     """
-    A set with a fixed maximum size. When full, adding a new item
-    discards the oldest item. This prevents unbounded memory growth.
+    A set-like data structure with a fixed maximum size, implemented
+    with an OrderedDict to provide O(1) for add, remove, and contains.
+    When full, adding a new item discards the oldest item.
     """
     def __init__(self, max_size=1_000_000):
         self.max_size = max_size
-        self.deque = collections.deque()
-        self.set = set()
+        self.data = collections.OrderedDict()
 
     def add(self, item):
-        if item in self.set:
-            return False
+        if item in self.data:
+            return False  # Item already exists
 
-        if len(self.deque) == self.max_size:
-            oldest = self.deque.popleft()
-            self.set.remove(oldest)
+        if len(self.data) >= self.max_size:
+            self.data.popitem(last=False)  # Remove the oldest item
 
-        self.deque.append(item)
-        self.set.add(item)
+        self.data[item] = None  # Add the new item
         return True
 
     def __contains__(self, item):
-        return item in self.set
+        return item in self.data
 
     def remove(self, item):
-        """Removes an item from the set and the deque."""
-        if item in self.set:
-            self.set.remove(item)
-            # Removing from a deque is an O(n) operation.
-            # This might be slow if the set is very large, but is
-            # necessary for the correctness of the retry logic.
-            self.deque.remove(item)
+        """Removes an item from the set."""
+        if item in self.data:
+            del self.data[item]
             return True
         return False
+
+    def __len__(self):
+        return len(self.data)
 
 
 # A set to track infohashes that have been successfully processed (metadata downloaded).
@@ -172,23 +170,35 @@ class SimpleCrawler(Maga):
 
 async def print_stats(crawler, task_queue):
     """
-    A periodic task to print statistics about the crawler and the task queue.
+    A periodic task to print statistics about the crawler and memory usage.
     """
+    snapshot = None
     while True:
         await asyncio.sleep(30)
-        stats = crawler.get_routing_table_stats()
-        log.info(
-            f"[STATS] DHT Nodes: {stats['total_nodes']} | "
-            f"Queue Size: {task_queue.qsize()}/{task_queue.maxsize} | "
-            f"Queued Hashes: {len(QUEUED_INFOHASHES.deque)} | "
-            f"Processed Hashes: {len(PROCESSED_INFOHASHES.deque)}"
-        )
+
+        new_snapshot = tracemalloc.take_snapshot()
+
+        log.info("=" * 30 + " MEMORY STATS " + "=" * 30)
+        if snapshot:
+            top_stats = new_snapshot.compare_to(snapshot, 'lineno')
+            log.info("[ Top 10 memory usage differences ]")
+            for stat in top_stats[:10]:
+                log.info(stat)
+
+        snapshot = new_snapshot
+
+        top_stats = snapshot.statistics('lineno')
+        log.info("[ Top 10 memory usage ]")
+        for stat in top_stats[:10]:
+            log.info(stat)
+        log.info("=" * 74)
 
 
 async def main(args):
     """
     The main entry point for the producer-consumer based crawler.
     """
+    tracemalloc.start()
     log.info("Starting the advanced DHT crawler (Producer-Consumer Model)...")
     loop = asyncio.get_running_loop()
 
