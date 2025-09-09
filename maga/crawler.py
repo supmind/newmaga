@@ -2,9 +2,9 @@ import asyncio
 import os
 import signal
 import socket
-import uvloop
+# import uvloop
 
-uvloop.install()
+# uvloop.install()
 
 from socket import inet_ntoa
 from struct import unpack
