@@ -1,0 +1,12 @@
+[R2]
+endpoint_url = https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+access_key_id = YOUR_R2_ACCESS_KEY_ID
+secret_access_key = YOUR_R2_SECRET_ACCESS_KEY
+bucket_name = YOUR_R2_BUCKET_NAME
+
+[Elasticsearch]
+hosts = http://localhost:9200
+index_name = torrents
+batch_size = 100
+ca_certs = /path/to/ca.crt
+api_key =
