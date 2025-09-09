@@ -114,7 +114,7 @@ async def main(args):
 
     # --- Perform Test ---
     start_time = time.monotonic()
-    found_peers = await perform_multi_hop_get_peers(crawler, infohash, starting_node_addrs, max_hops=4)
+    found_peers = await perform_multi_hop_get_peers(crawler, infohash, starting_node_addrs, max_hops=5)
     end_time = time.monotonic()
     duration = end_time - start_time
 
