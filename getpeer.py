@@ -82,9 +82,9 @@ async def main(args):
     loop = asyncio.get_running_loop()
 
     try:
-        infohash = binascii.unhexlify(args.infohash)
+        infohash = binascii.unhexlify(args)
     except (ValueError, TypeError):
-        logging.error(f"Invalid infohash provided: {args.infohash}")
+        logging.error(f"Invalid infohash provided: {args}")
         return
 
     crawler = TestCrawler()
