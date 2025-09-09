@@ -115,7 +115,7 @@ async def main(args):
     found_peers = await perform_two_hop_get_peers(crawler, infohash, starting_node_addrs)
 
     logging.info("="*20 + " Test Complete " + "="*20)
-    logging.info(f"Query for infohash {args.infohash} finished.")
+    logging.info(f"Query for infohash {args} finished.")
     logging.info(f"Total unique peers found: {len(found_peers)}")
     if found_peers:
         logging.info("Some of the peers found:")
