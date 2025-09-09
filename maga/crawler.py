@@ -33,6 +33,7 @@ class Maga(asyncio.DatagramProtocol):
             self.handler = handler
         self.log = logging.getLogger("Crawler")
         self._pending_queries = {}
+        self.background_tasks = set()
         self.k_buckets = [collections.deque(maxlen=K) for _ in range(160)]
         self.k_bucket_locks = [asyncio.Lock() for _ in range(160)]
 
@@ -86,7 +87,9 @@ class Maga(asyncio.DatagramProtocol):
 
         try:
             node_id = msg[constants.KRPC_A][constants.KRPC_ID]
-            asyncio.ensure_future(self._add_node(node_id, addr), loop=self.loop)
+            task = asyncio.ensure_future(self._add_node(node_id, addr), loop=self.loop)
+            self.background_tasks.add(task)
+            task.add_done_callback(self.background_tasks.discard)
         except KeyError:
             # This happens on response messages, where the node ID is not present
             # in the top-level 'a' dictionary. We handle this by finding the node
@@ -102,7 +105,10 @@ class Maga(asyncio.DatagramProtocol):
         if msg_type == constants.KRPC_RESPONSE:
             return self.handle_response(msg, addr)
         elif msg_type == constants.KRPC_QUERY:
-            return asyncio.ensure_future(self.handle_query(msg, addr), loop=self.loop)
+            task = asyncio.ensure_future(self.handle_query(msg, addr), loop=self.loop)
+            self.background_tasks.add(task)
+            task.add_done_callback(self.background_tasks.discard)
+            return task
 
     def stop(self):
         self.__running = False
@@ -130,7 +136,10 @@ class Maga(asyncio.DatagramProtocol):
             # Bootstrap
             self.find_node(addr=node, node_id=self.node_id)
 
-        self.find_nodes_task = asyncio.ensure_future(self.auto_find_nodes(), loop=self.loop)
+        task = asyncio.ensure_future(self.auto_find_nodes(), loop=self.loop)
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
+        self.find_nodes_task = task
 
     def handle_response(self, msg, addr):
         # A response from a node we know about is a good sign
@@ -153,7 +162,9 @@ class Maga(asyncio.DatagramProtocol):
         args = msg.get(constants.KRPC_R, {})
         if constants.KRPC_NODES in args:
             for node_id, ip, port in utils.split_nodes(args[constants.KRPC_NODES]):
-                asyncio.ensure_future(self._add_node(node_id, (ip, port)), loop=self.loop)
+                task = asyncio.ensure_future(self._add_node(node_id, (ip, port)), loop=self.loop)
+                self.background_tasks.add(task)
+                task.add_done_callback(self.background_tasks.discard)
 
     async def handle_query(self, msg, addr):
         args = msg.get(constants.KRPC_A, {})

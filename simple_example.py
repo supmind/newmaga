@@ -4,7 +4,6 @@ import logging
 import signal
 import collections
 import argparse
-import tracemalloc
 
 from maga.crawler import Maga
 from maga.downloader import get_metadata
@@ -170,35 +169,23 @@ class SimpleCrawler(Maga):
 
 async def print_stats(crawler, task_queue):
     """
-    A periodic task to print statistics about the crawler and memory usage.
+    A periodic task to print statistics about the crawler and the task queue.
     """
-    snapshot = None
     while True:
         await asyncio.sleep(30)
-
-        new_snapshot = tracemalloc.take_snapshot()
-
-        log.info("=" * 30 + " MEMORY STATS " + "=" * 30)
-        if snapshot:
-            top_stats = new_snapshot.compare_to(snapshot, 'lineno')
-            log.info("[ Top 10 memory usage differences ]")
-            for stat in top_stats[:10]:
-                log.info(stat)
-
-        snapshot = new_snapshot
-
-        top_stats = snapshot.statistics('lineno')
-        log.info("[ Top 10 memory usage ]")
-        for stat in top_stats[:10]:
-            log.info(stat)
-        log.info("=" * 74)
+        stats = crawler.get_routing_table_stats()
+        log.info(
+            f"[STATS] DHT Nodes: {stats['total_nodes']} | "
+            f"Queue Size: {task_queue.qsize()}/{task_queue.maxsize} | "
+            f"Queued Hashes: {len(QUEUED_INFOHASHES)} | "
+            f"Processed Hashes: {len(PROCESSED_INFOHASHES)}"
+        )
 
 
 async def main(args):
     """
     The main entry point for the producer-consumer based crawler.
     """
-    tracemalloc.start()
     log.info("Starting the advanced DHT crawler (Producer-Consumer Model)...")
     loop = asyncio.get_running_loop()
 
