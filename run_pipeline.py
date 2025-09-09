@@ -23,26 +23,51 @@ from fastbencode import bencode
 ES_QUEUE = asyncio.Queue()
 
 def load_config(path='config.ini'):
-    """加载配置文件"""
+    """加载并验证配置文件"""
     if not os.path.exists(path):
-        raise FileNotFoundError(f"配置文件 '{path}' 未找到。请从 'config.ini.template' 创建。")
+        raise FileNotFoundError(f"配置文件 '{path}' 未找到。请从 'config.ini.template' 创建并填写。")
+
     config = configparser.ConfigParser()
     config.read(path)
+
+    # 验证 R2 配置
+    if 'R2' not in config:
+        raise ValueError("配置文件中缺少 [R2] 部分。")
+
+    required_r2_keys = ['endpoint_url', 'access_key_id', 'secret_access_key', 'bucket_name']
+    for key in required_r2_keys:
+        if key not in config['R2'] or not config['R2'][key]:
+            raise ValueError(f"[R2] 部分缺少必需的配置项: '{key}'。")
+
+    # 验证 Elasticsearch 配置
+    if 'Elasticsearch' not in config:
+        raise ValueError("配置文件中缺少 [Elasticsearch] 部分。")
+
+    required_es_keys = ['hosts', 'index_name']
+    for key in required_es_keys:
+        if key not in config['Elasticsearch'] or not config['Elasticsearch'][key]:
+            raise ValueError(f"[Elasticsearch] 部分缺少必需的配置项: '{key}'。")
+
     return config
 
 async def upload_to_r2(config, infohash_hex, torrent_data):
-    """将种子文件上传到Cloudflare R2"""
+    """将种子文件异步上传到Cloudflare R2，不会阻塞事件循环。"""
     try:
         r2_config = config['R2']
+        # Boto3的客户端是线程安全的，可以在每次调用时创建，也可以在外部创建一次后重用。
+        # 为简单起见，此处在每次调用时创建。
         s3_client = boto3.client(
             service_name='s3',
             endpoint_url=r2_config['endpoint_url'],
             aws_access_key_id=r2_config['access_key_id'],
             aws_secret_access_key=r2_config['secret_access_key'],
-            region_name='auto'  # R2 specific
+            region_name='auto'
         )
         file_name = f"{infohash_hex}.torrent"
-        s3_client.put_object(
+
+        # 在一个单独的线程中运行阻塞的IO操作 s3_client.put_object
+        await asyncio.to_thread(
+            s3_client.put_object,
             Bucket=r2_config['bucket_name'],
             Key=file_name,
             Body=torrent_data
@@ -102,6 +127,24 @@ async def elasticsearch_bulk_worker(config, queue):
 
         except asyncio.CancelledError:
             log.info("Elasticsearch工作者正在关闭...")
+            # 在退出前，处理批次中剩余的任何项目，防止数据丢失
+            if batch:
+                log.info(f"正在处理最后 {len(batch)} 个剩余项目...")
+                try:
+                    final_actions = [
+                        {
+                            "_index": es_config['index_name'],
+                            "_id": doc["infohash"],
+                            "_source": doc
+                        }
+                        for doc in batch
+                    ]
+                    success, failed = await async_bulk(es_client, final_actions, raise_on_error=False)
+                    log.info(f"最终批次处理完成。成功: {success} 个, 失败: {failed} 个。")
+                    if failed:
+                        log.error(f"最终批次索引失败详情: {failed}")
+                except Exception:
+                    log.exception("在最终批次处理期间发生错误")
             break
         except Exception:
             log.exception("Elasticsearch工作者遇到错误")
@@ -146,10 +189,7 @@ async def metadata_downloader(config, task_queue, es_queue, queued_hashes):
                 PROCESSED_INFOHASHES.add(infohash_hex)
                 torrent_data = bencode(info)
 
-                # 异步运行R2上传
-                # 注意：boto3是同步的，在asyncio事件循环中直接调用会阻塞。
-                # 理想情况下应使用像 aioboto3 这样的异步库，或使用 run_in_executor。
-                # 为简单起见，我们暂时直接调用，但在高负载下这可能成为瓶颈。
+                # 调用异步函数将文件上传到R2
                 await upload_to_r2(config, infohash_hex, torrent_data)
 
                 # 准备 ES 文档
