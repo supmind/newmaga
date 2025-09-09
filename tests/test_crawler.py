@@ -128,7 +128,7 @@ async def test_rate_limiter_drops_packets(crawler, monkeypatch):
     monkeypatch.setattr("maga.crawler.constants.RATE_LIMIT_REQUESTS", 3)
     monkeypatch.setattr("maga.crawler.constants.RATE_LIMIT_WINDOW", 1)
 
-    from maga.crawler import bencode
+    from fastbencode import bencode
 
     crawler.handle_message = MagicMock()
 

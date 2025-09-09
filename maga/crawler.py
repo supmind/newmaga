@@ -14,16 +14,8 @@ import io
 from datetime import datetime, timezone
 import random
 import collections
-from . import bencode as bencoder
+from fastbencode import bencode, bdecode
 import logging
-
-def bencode(data):
-    out = io.BytesIO()
-    bencoder.serialize(data, out)
-    return out.getvalue()
-
-def bdecode(data):
-    return bencoder.parse(io.BytesIO(data))
 
 from . import utils
 from . import constants
