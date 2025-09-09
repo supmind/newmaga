@@ -8,12 +8,21 @@ uvloop.install()
 
 from socket import inet_ntoa
 from struct import unpack
+import io
 
 from datetime import datetime, timezone
 import random
 import collections
-from fastbencode import bencode, bdecode
+from . import bencode as bencoder
 import logging
+
+def bencode(data):
+    out = io.BytesIO()
+    bencoder.serialize(data, out)
+    return out.getvalue()
+
+def bdecode(data):
+    return bencoder.parse(io.BytesIO(data))
 
 from . import utils
 from . import constants
