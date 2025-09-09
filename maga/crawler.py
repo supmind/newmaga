@@ -433,7 +433,7 @@ class Maga(asyncio.DatagramProtocol):
             if self.node_queue.full():
                 # Remove the oldest item to make space
                 self.node_queue.get_nowait()
-                self.log.warning("Node processing queue is full, dropping oldest node.")
+                # self.log.warning("Node processing queue is full, dropping oldest node.")
             self.node_queue.put_nowait((node_id, addr))
         except asyncio.QueueFull:
             # This should technically not be reached if we check full() first,
