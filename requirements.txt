@@ -1,7 +1,7 @@
-fastbencode
 uvloop
 av
 aiohttp
 elasticsearch-async
 pytest
 pytest-asyncio
+typing_extensions
