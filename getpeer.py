@@ -5,6 +5,8 @@ import signal
 import argparse
 import binascii
 import time
+from socket import inet_ntoa
+from struct import unpack
 
 from maga.crawler import Maga
 from maga import utils
@@ -60,8 +62,17 @@ async def perform_multi_hop_get_peers(crawler: Maga, infohash: bytes, starting_n
                 continue
 
             if constants.KRPC_VALUES in r_args:
-                for peer in utils.split_peers(r_args[constants.KRPC_VALUES]):
-                    found_peers.add(peer)
+                # The 'values' field is a list of 6-byte strings, where each string
+                # is a compact representation of a peer's IP and port.
+                peer_strings = r_args[constants.KRPC_VALUES]
+                for peer_string in peer_strings:
+                    if isinstance(peer_string, bytes) and len(peer_string) == 6:
+                        try:
+                            ip = inet_ntoa(peer_string[0:4])
+                            port = unpack("!H", peer_string[4:6])[0]
+                            found_peers.add((ip, port))
+                        except Exception:
+                            logging.warning(f"Failed to unpack peer string: {peer_string}")
 
             if constants.KRPC_NODES in r_args:
                 for _, ip, port in utils.split_nodes(r_args[constants.KRPC_NODES]):
