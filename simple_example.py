@@ -88,7 +88,7 @@ async def metadata_downloader(task_queue, queued_hashes):
 
             # Asynchronously download metadata from the announcing peer
             loop = asyncio.get_running_loop()
-            info = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop, timeout=10)
+            info = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop, timeout=3)
 
             if info:
                 # Only add the infohash to the processed set AFTER a successful download.
@@ -108,6 +108,7 @@ async def metadata_downloader(task_queue, queued_hashes):
                 log.info(f"  Size: {format_bytes(total_size)}")
                 log.info(f"  Files: {num_files}")
                 log.info("=" * 82 + "\n")
+                info = None
 
         except asyncio.CancelledError:
             # If the task is cancelled, we should exit the loop cleanly.
