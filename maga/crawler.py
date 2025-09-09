@@ -2,6 +2,7 @@ import asyncio
 import os
 import signal
 import socket
+import time
 import uvloop
 
 uvloop.install()
@@ -43,6 +44,7 @@ class Maga(asyncio.DatagramProtocol):
         self.log = logging.getLogger("Crawler")
         self._pending_queries = {}
         self.background_tasks = set()
+        self.rate_limiter = {}
         self.k_buckets = [collections.deque(maxlen=K) for _ in range(160)]
         self.k_bucket_locks = [asyncio.Lock() for _ in range(160)]
 
@@ -71,6 +73,24 @@ class Maga(asyncio.DatagramProtocol):
         super().connection_lost(exc)
 
     def datagram_received(self, data, addr):
+        now = time.monotonic()
+        ip = addr[0]
+
+        if ip not in self.rate_limiter:
+            self.rate_limiter[ip] = collections.deque()
+
+        timestamps = self.rate_limiter[ip]
+
+        # Remove timestamps older than the window
+        while timestamps and timestamps[0] < now - constants.RATE_LIMIT_WINDOW:
+            timestamps.popleft()
+
+        if len(timestamps) >= constants.RATE_LIMIT_REQUESTS:
+            # Drop packet
+            return
+
+        timestamps.append(now)
+
         try:
             msg = bdecode(data)
         except:

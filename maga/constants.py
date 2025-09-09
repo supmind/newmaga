@@ -45,3 +45,7 @@ KRPC_SERVER_ERROR = [202, "Server Error"]
 K = 8  # K-bucket size
 MIN_NODE_ID = 0
 MAX_NODE_ID = 2**160 - 1
+
+# Rate Limiting
+RATE_LIMIT_WINDOW = 10  # seconds
+RATE_LIMIT_REQUESTS = 100  # requests per window
