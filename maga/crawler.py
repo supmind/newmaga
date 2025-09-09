@@ -35,7 +35,8 @@ K = 8
 
 
 class Maga(asyncio.DatagramProtocol):
-    def __init__(self, loop=None, bootstrap_nodes=constants.BOOTSTRAP_NODES, interval=1, handler=None):
+    def __init__(self, loop=None, bootstrap_nodes=constants.BOOTSTRAP_NODES, interval=1, handler=None,
+                 node_queue_maxsize=500, node_processor_concurrency=10):
         self.node_id = utils.random_node_id()
         self.transport = None
         self.loop = loop or asyncio.get_event_loop()
@@ -47,6 +48,10 @@ class Maga(asyncio.DatagramProtocol):
         self.rate_limiter = {}
         self.k_buckets = [collections.deque(maxlen=K) for _ in range(160)]
         self.k_bucket_locks = [asyncio.Lock() for _ in range(160)]
+
+        self.node_processor_concurrency = node_processor_concurrency
+        self.node_queue = asyncio.Queue(maxsize=node_queue_maxsize)
+        self.node_processor_tasks = []
 
         resolved_bootstrap_nodes = []
         for host, port in bootstrap_nodes:
@@ -63,6 +68,7 @@ class Maga(asyncio.DatagramProtocol):
         self.__running = False
         self.interval = interval
         self.find_nodes_task = None
+        self.cleanup_task = None
 
     def connection_made(self, transport):
         self.transport = transport
@@ -117,9 +123,7 @@ class Maga(asyncio.DatagramProtocol):
         node_id = None
         try:
             node_id = msg[constants.KRPC_A][constants.KRPC_ID]
-            task = asyncio.ensure_future(self._add_node(node_id, addr), loop=self.loop)
-            self.background_tasks.add(task)
-            task.add_done_callback(self.background_tasks.discard)
+            self._add_node_to_queue(node_id, addr)
         except KeyError:
             # This can happen on response messages.
             # We find the node by its address and update its last_seen time.
@@ -153,8 +157,27 @@ class Maga(asyncio.DatagramProtocol):
         self.__running = False
         if self.find_nodes_task:
             self.find_nodes_task.cancel()
+        if self.cleanup_task:
+            self.cleanup_task.cancel()
+        for task in self.node_processor_tasks:
+            task.cancel()
         if self.transport:
             self.transport.close()
+
+    async def _node_processor(self):
+        """
+        Pulls nodes from the queue and processes them.
+        """
+        while self.__running:
+            try:
+                node_id, addr = await self.node_queue.get()
+                await self._add_node(node_id, addr)
+                self.node_queue.task_done()
+            except asyncio.CancelledError:
+                self.log.info("Node processor task cancelled.")
+                break
+            except Exception:
+                self.log.exception("Error in node processor task.")
 
     async def auto_find_nodes(self):
         self.__running = True
@@ -165,6 +188,40 @@ class Maga(asyncio.DatagramProtocol):
                     self.find_node(addr=node)
             except Exception:
                 self.log.exception("Error in Crawler auto_find_nodes loop")
+
+    async def _cleanup_rate_limiter(self):
+        """
+        Periodically cleans up the rate_limiter dictionary to remove stale entries.
+        """
+        while self.__running:
+            try:
+                await asyncio.sleep(constants.RATE_LIMIT_CLEANUP_INTERVAL)
+
+                now = time.monotonic()
+                initial_size = len(self.rate_limiter)
+
+                # Create a list of IPs to remove to avoid modifying the dict while iterating
+                stale_ips = [
+                    ip for ip, timestamps in self.rate_limiter.items()
+                    if not timestamps or timestamps[-1] < now - constants.RATE_LIMIT_CLEANUP_INTERVAL
+                ]
+
+                for ip in stale_ips:
+                    del self.rate_limiter[ip]
+
+                final_size = len(self.rate_limiter)
+                if initial_size > 0:
+                    self.log.info(
+                        f"Rate limiter cleanup: "
+                        f"Removed {len(stale_ips)} stale entries. "
+                        f"Size changed from {initial_size} to {final_size}."
+                    )
+
+            except asyncio.CancelledError:
+                self.log.info("Rate limiter cleanup task cancelled.")
+                break
+            except Exception:
+                self.log.exception("Error in rate limiter cleanup task.")
 
     async def run(self, port=6881):
         _, _ = await self.loop.create_datagram_endpoint(
@@ -179,6 +236,17 @@ class Maga(asyncio.DatagramProtocol):
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
         self.find_nodes_task = task
+
+        cleanup_task = asyncio.ensure_future(self._cleanup_rate_limiter(), loop=self.loop)
+        self.background_tasks.add(cleanup_task)
+        cleanup_task.add_done_callback(self.background_tasks.discard)
+        self.cleanup_task = cleanup_task
+
+        for _ in range(self.node_processor_concurrency):
+            task = asyncio.ensure_future(self._node_processor(), loop=self.loop)
+            self.background_tasks.add(task)
+            task.add_done_callback(self.background_tasks.discard)
+            self.node_processor_tasks.append(task)
 
     def handle_response(self, tid, r_args, addr):
         # A response from a node we know about is a good sign.
@@ -196,9 +264,7 @@ class Maga(asyncio.DatagramProtocol):
         # from other nodes' responses to us.
         if constants.KRPC_NODES in r_args:
             for node_id, ip, port in utils.split_nodes(r_args[constants.KRPC_NODES]):
-                task = asyncio.ensure_future(self._add_node(node_id, (ip, port)), loop=self.loop)
-                self.background_tasks.add(task)
-                task.add_done_callback(self.background_tasks.discard)
+                self._add_node_to_queue(node_id, (ip, port))
 
     async def handle_query(self, tid, q_type, a_args, addr):
         node_id = a_args.get(constants.KRPC_ID)
@@ -361,6 +427,18 @@ class Maga(asyncio.DatagramProtocol):
         if distance == 0:
             return 0
         return distance.bit_length() - 1
+
+    def _add_node_to_queue(self, node_id, addr):
+        try:
+            if self.node_queue.full():
+                # Remove the oldest item to make space
+                self.node_queue.get_nowait()
+                self.log.warning("Node processing queue is full, dropping oldest node.")
+            self.node_queue.put_nowait((node_id, addr))
+        except asyncio.QueueFull:
+            # This should technically not be reached if we check full() first,
+            # but as a safeguard in case of race conditions (though unlikely here).
+            self.log.error("Failed to add node to queue even after attempting to make space.")
 
     async def _add_node(self, node_id, addr):
         bucket_index = self._get_bucket_index(node_id)
