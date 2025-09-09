@@ -7,7 +7,7 @@ import argparse
 
 from maga.crawler import Maga
 from maga.downloader import get_metadata
-from maga.utils import proper_infohash
+from maga.utils import proper_infohash, BoundedSet, format_bytes
 
 # Configure basic logging to see the output from the crawler and this script
 logging.basicConfig(
@@ -17,58 +17,11 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-class BoundedSet:
-    """
-    A set-like data structure with a fixed maximum size, implemented
-    with an OrderedDict to provide O(1) for add, remove, and contains.
-    When full, adding a new item discards the oldest item.
-    """
-    def __init__(self, max_size=1_000_000):
-        self.max_size = max_size
-        self.data = collections.OrderedDict()
-
-    def add(self, item):
-        if item in self.data:
-            return False  # Item already exists
-
-        if len(self.data) >= self.max_size:
-            self.data.popitem(last=False)  # Remove the oldest item
-
-        self.data[item] = None  # Add the new item
-        return True
-
-    def __contains__(self, item):
-        return item in self.data
-
-    def remove(self, item):
-        """Removes an item from the set."""
-        if item in self.data:
-            del self.data[item]
-            return True
-        return False
-
-    def __len__(self):
-        return len(self.data)
-
-
 # A set to track infohashes that have been successfully processed (metadata downloaded).
 PROCESSED_INFOHASHES = BoundedSet(max_size=1_000_000)
 # A set to track infohashes that have been added to the download queue.
 # This prevents adding the same task to the queue multiple times.
 QUEUED_INFOHASHES = BoundedSet(max_size=1_000_000)
-
-
-def format_bytes(size):
-    """Formats a size in bytes into a human-readable string (KB, MB, GB)."""
-    if size is None:
-        return "N/A"
-    power = 1024
-    n = 0
-    power_labels = {0: 'B', 1: 'KB', 2: 'MB', 3: 'GB', 4: 'TB'}
-    while size >= power and n < len(power_labels) - 1:
-        size /= power
-        n += 1
-    return f"{size:.2f} {power_labels[n]}"
 
 
 async def metadata_downloader(task_queue, queued_hashes):

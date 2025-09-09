@@ -2,6 +2,7 @@ import binascii
 import os
 from socket import inet_ntoa
 from struct import unpack
+import collections
 
 
 def proper_infohash(infohash):
@@ -46,3 +47,50 @@ def split_peers(peers):
         ip = inet_ntoa(peers[i:i+4])
         port = unpack("!H", peers[i+4:i+6])[0]
         yield ip, port
+
+
+class BoundedSet:
+    """
+    A set-like data structure with a fixed maximum size, implemented
+    with an OrderedDict to provide O(1) for add, remove, and contains.
+    When full, adding a new item discards the oldest item.
+    """
+    def __init__(self, max_size=1_000_000):
+        self.max_size = max_size
+        self.data = collections.OrderedDict()
+
+    def add(self, item):
+        if item in self.data:
+            return False  # Item already exists
+
+        if len(self.data) >= self.max_size:
+            self.data.popitem(last=False)  # Remove the oldest item
+
+        self.data[item] = None  # Add the new item
+        return True
+
+    def __contains__(self, item):
+        return item in self.data
+
+    def remove(self, item):
+        """Removes an item from the set."""
+        if item in self.data:
+            del self.data[item]
+            return True
+        return False
+
+    def __len__(self):
+        return len(self.data)
+
+
+def format_bytes(size):
+    """Formats a size in bytes into a human-readable string (KB, MB, GB)."""
+    if size is None:
+        return "N/A"
+    power = 1024
+    n = 0
+    power_labels = {0: 'B', 1: 'KB', 2: 'MB', 3: 'GB', 4: 'TB'}
+    while size >= power and n < len(power_labels) - 1:
+        size /= power
+        n += 1
+    return f"{size:.2f} {power_labels[n]}"
