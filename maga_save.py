@@ -90,7 +90,8 @@ async def metadata_downloader(task_queue, queued_hashes):
                 # -- 中文注释 --
                 # 将下载的元数据（info字典）编码为bencode格式，并保存为 .torrent 文件
                 # 这是制作 .torrent 文件的标准方式
-                torrent_data = bencode(info)
+                # The torrent file must be a dictionary containing the 'info' key.
+                torrent_data = bencode({b'info': info})
                 file_path = os.path.join(DOWNLOAD_DIR, f"{infohash_hex}.torrent")
                 with open(file_path, "wb") as f:
                     f.write(torrent_data)
