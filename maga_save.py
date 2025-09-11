@@ -4,6 +4,7 @@ import logging
 import signal
 import os
 import argparse
+import aiohttp
 
 from maga.crawler import Maga
 from maga.downloader import get_metadata
@@ -25,6 +26,40 @@ DOWNLOAD_DIR = "downloads"
 # BoundedSet 是一个有最大大小限制的集合，当超过大小时，会自动丢弃最旧的元素
 PROCESSED_INFOHASHES = BoundedSet(max_size=1_000_000)
 QUEUED_INFOHASHES = BoundedSet(max_size=1_000_000)
+
+
+async def submit_screenshot_task(infohash, torrent_path):
+    """
+    Submits a task to the screenshot service.
+    """
+    url = 'http://47.79.230.210:8000/tasks/'
+    api_key = 'a_very_secret_and_complex_key_for_dev'
+    headers = {
+        'accept': 'application/json',
+        'X-API-Key': api_key
+    }
+
+    try:
+        with open(torrent_path, 'rb') as torrent_file:
+            data = aiohttp.FormData()
+            data.add_field('infohash', infohash)
+            data.add_field('torrent_file',
+                           torrent_file,
+                           filename=os.path.basename(torrent_path),
+                           content_type='application/x-bittorrent')
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, data=data) as response:
+                    if response.status == 200:
+                        log.info(f"Successfully submitted screenshot task for {infohash}.")
+                    else:
+                        log.error(f"Failed to submit screenshot task for {infohash}. Status: {response.status}, Response: {await response.text()}")
+
+    except FileNotFoundError:
+        log.error(f"Could not find torrent file for submission: {torrent_path}")
+        return
+    except aiohttp.ClientError as e:
+        log.error(f"An error occurred while submitting task for {infohash}: {e}")
 
 
 async def metadata_downloader(task_queue, queued_hashes):
@@ -61,6 +96,24 @@ async def metadata_downloader(task_queue, queued_hashes):
                     f.write(torrent_data)
 
                 log.info(f"成功下载并保存元数据: Name: {name}, Infohash: {infohash_hex}")
+
+                # -- BEGIN: Screenshot submission logic --
+                has_mp4 = False
+                if b'files' in info:
+                    for file_info in info[b'files']:
+                        path_parts = file_info.get(b'path', [])
+                        if path_parts and path_parts[-1].decode(errors='ignore').lower().endswith('.mp4'):
+                            has_mp4 = True
+                            break
+                elif b'name' in info:
+                    if info[b'name'].decode(errors='ignore').lower().endswith('.mp4'):
+                        has_mp4 = True
+
+                if has_mp4:
+                    log.info(f"MP4 file found in {infohash_hex}. Submitting for screenshot.")
+                    # Using create_task to avoid blocking the downloader worker
+                    loop.create_task(submit_screenshot_task(infohash_hex, file_path))
+                # -- END: Screenshot submission logic --
 
         except asyncio.CancelledError:
             # 如果任务被取消，优雅地退出循环
