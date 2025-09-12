@@ -108,27 +108,14 @@ class SimpleCrawler(Maga):
             self.queued_hashes.remove(infohash_hex)
 
 
-    def get_routing_table_stats(self):
-        """
-        Calculates and returns statistics about the DHT routing table.
-        """
-        total_nodes = sum(len(bucket) for bucket in self.k_buckets)
-        non_empty_buckets = sum(1 for bucket in self.k_buckets if bucket)
-        return {
-            "total_nodes": total_nodes,
-            "non_empty_buckets": non_empty_buckets
-        }
-
-
 async def print_stats(crawler, task_queue):
     """
     A periodic task to print statistics about the crawler and the task queue.
     """
     while True:
         await asyncio.sleep(30)
-        stats = crawler.get_routing_table_stats()
         log.info(
-            f"[STATS] DHT Nodes: {stats['total_nodes']} | "
+            f"[STATS] "
             f"Queue Size: {task_queue.qsize()}/{task_queue.maxsize} | "
             f"Queued Hashes: {len(QUEUED_INFOHASHES)} | "
             f"Processed Hashes: {len(PROCESSED_INFOHASHES)}"

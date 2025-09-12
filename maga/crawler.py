@@ -38,8 +38,6 @@ class Maga(asyncio.DatagramProtocol):
         self._pending_queries = {}
         self.background_tasks = set()
         self.rate_limiter = {}
-        self.k_buckets = [collections.deque(maxlen=K) for _ in range(160)]
-        self.k_bucket_locks = [asyncio.Lock() for _ in range(160)]
 
         self.node_processor_concurrency = node_processor_concurrency
         self.node_queue = asyncio.Queue(maxsize=node_queue_maxsize)
@@ -118,15 +116,7 @@ class Maga(asyncio.DatagramProtocol):
             self._add_node_to_queue(node_id, addr)
         except KeyError:
             # This can happen on response messages.
-            # We find the node by its address and update its last_seen time.
-            if msg_type == constants.KRPC_RESPONSE:
-                for bucket in self.k_buckets:
-                    node = next((n for n in bucket if n["addr"] == addr), None)
-                    if node:
-                        node["last_seen"] = datetime.now(timezone.utc)
-                        bucket.remove(node)
-                        bucket.append(node)
-                        break
+            pass
 
         if msg_type == constants.KRPC_RESPONSE:
             tid = msg.get(constants.KRPC_T)
@@ -163,7 +153,7 @@ class Maga(asyncio.DatagramProtocol):
         while self.__running:
             try:
                 node_id, addr = await self.node_queue.get()
-                await self._add_node(node_id, addr)
+                self.find_node(addr=addr, node_id=node_id)
                 self.node_queue.task_done()
             except asyncio.CancelledError:
                 self.log.info("Node processor task cancelled.")
@@ -361,64 +351,7 @@ class Maga(asyncio.DatagramProtocol):
         finally:
             self._pending_queries.pop(tid, None)
 
-    async def get_peers_recursive(self, infohash, max_hops=2):
-        """
-        Performs a recursive, multi-hop get_peers query.
-        """
-        peers = set()
-        queried_nodes = set()
 
-        # Start with the closest nodes from our own k-buckets
-        bucket_index = self._get_bucket_index(infohash)
-        nodes_to_query = [node["addr"] for node in self.k_buckets[bucket_index]]
-        if not nodes_to_query:
-            nodes_to_query = list(self.bootstrap_nodes)
-
-        for hop in range(max_hops):
-            query_data = {
-                constants.KRPC_Y: constants.KRPC_QUERY,
-                constants.KRPC_Q: constants.KRPC_GET_PEERS,
-                constants.KRPC_A: {
-                    constants.KRPC_ID: self.node_id,
-                    constants.KRPC_INFO_HASH: infohash
-                }
-            }
-
-            tasks = [self._send_query_and_wait(query_data, addr) for addr in nodes_to_query if addr not in queried_nodes]
-            queried_nodes.update(nodes_to_query)
-
-            if not tasks:
-                break
-
-            responses = await asyncio.gather(*tasks)
-
-            new_nodes_found = []
-            for r_args in responses:
-                if not r_args:
-                    continue
-
-                if constants.KRPC_VALUES in r_args:
-                    for peer in utils.split_peers(r_args[constants.KRPC_VALUES]):
-                        peers.add(peer)
-
-                if constants.KRPC_NODES in r_args:
-                    for node_id, ip, port in utils.split_nodes(r_args[constants.KRPC_NODES]):
-                        new_nodes_found.append((ip, port))
-
-            if peers:
-                # If we found peers, we can stop searching
-                break
-
-            # Prepare for the next hop
-            nodes_to_query = new_nodes_found
-
-        return len(peers)
-
-    def _get_bucket_index(self, node_id):
-        distance = utils.get_distance(self.node_id, node_id)
-        if distance == 0:
-            return 0
-        return distance.bit_length() - 1
 
     def _add_node_to_queue(self, node_id, addr):
         try:
@@ -432,60 +365,6 @@ class Maga(asyncio.DatagramProtocol):
             # but as a safeguard in case of race conditions (though unlikely here).
             self.log.error("Failed to add node to queue even after attempting to make space.")
 
-    async def _add_node(self, node_id, addr):
-        bucket_index = self._get_bucket_index(node_id)
-        lock = self.k_bucket_locks[bucket_index]
-
-        async with lock:
-            bucket = self.k_buckets[bucket_index]
-
-            # Check if node already exists by ID
-            existing_node = next((n for n in bucket if n["id"] == node_id), None)
-            if existing_node:
-                # It exists, move it to the end to mark it as most recently seen
-                existing_node["last_seen"] = datetime.now(timezone.utc)
-                bucket.remove(existing_node)
-                bucket.append(existing_node)
-                return
-
-            # If bucket is not full, add the new node
-            if len(bucket) < K:
-                bucket.append({
-                    "id": node_id[:],
-                    "addr": addr,
-                    "last_seen": datetime.now(timezone.utc),
-                    "first_seen": datetime.now(timezone.utc),
-                    "response_count": 0
-                })
-                return
-
-            # Bucket is full, challenge the least-recently-seen node (at the front)
-            lru_node = bucket[0]
-
-            ping_query = {
-                constants.KRPC_Y: constants.KRPC_QUERY,
-                constants.KRPC_Q: constants.KRPC_PING,
-                constants.KRPC_A: {
-                    constants.KRPC_ID: self.node_id
-                }
-            }
-            response = await self._send_query_and_wait(ping_query, lru_node["addr"], timeout=1)
-
-            if response is None:
-                # Node did not respond, evict it and add the new one
-                bucket.popleft() # popleft is more efficient for deque
-                bucket.append({
-                    "id": node_id[:],
-                    "addr": addr,
-                    "last_seen": datetime.now(timezone.utc),
-                    "first_seen": datetime.now(timezone.utc),
-                    "response_count": 0
-                })
-            else:
-                # Node responded, move it to the end and discard the new candidate
-                bucket.remove(lru_node)
-                lru_node["last_seen"] = datetime.now(timezone.utc)
-                bucket.append(lru_node)
 
     async def handler(self, infohash, addr, peer_addr=None):
         """
