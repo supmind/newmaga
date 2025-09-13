@@ -20,16 +20,15 @@ import logging
 
 from . import utils
 from . import constants
+from . import config
 
 
 __version__ = '3.0.0'
 
-K = 8
-
 
 class Maga(asyncio.DatagramProtocol):
-    def __init__(self, loop=None, bootstrap_nodes=constants.BOOTSTRAP_NODES, interval=1, handler=None,
-                 node_queue_maxsize=500, node_processor_concurrency=10):
+    def __init__(self, loop=None, bootstrap_nodes=config.BOOTSTRAP_NODES, interval=config.CRAWLER_INTERVAL, handler=None,
+                 node_queue_maxsize=config.NODE_QUEUE_MAXSIZE, node_processor_concurrency=config.NODE_PROCESSOR_CONCURRENCY):
         self.node_id = utils.random_node_id()
         self.transport = None
         self.loop = loop or asyncio.get_event_loop()
@@ -39,7 +38,7 @@ class Maga(asyncio.DatagramProtocol):
         self._pending_queries = {}
         self.background_tasks = set()
         self.rate_limiter = {}
-        self.k_buckets = [collections.deque(maxlen=K) for _ in range(160)]
+        self.k_buckets = [collections.deque(maxlen=config.K) for _ in range(160)]
         self.k_bucket_locks = [asyncio.Lock() for _ in range(160)]
 
         self.node_processor_concurrency = node_processor_concurrency
@@ -81,10 +80,10 @@ class Maga(asyncio.DatagramProtocol):
         timestamps = self.rate_limiter[ip]
 
         # Remove timestamps older than the window
-        while timestamps and timestamps[0] < now - constants.RATE_LIMIT_WINDOW:
+        while timestamps and timestamps[0] < now - config.RATE_LIMIT_WINDOW:
             timestamps.popleft()
 
-        if len(timestamps) >= constants.RATE_LIMIT_REQUESTS:
+        if len(timestamps) >= config.RATE_LIMIT_REQUESTS:
             # Drop packet
             return
 
@@ -188,7 +187,7 @@ class Maga(asyncio.DatagramProtocol):
         """
         while self.__running:
             try:
-                await asyncio.sleep(constants.RATE_LIMIT_CLEANUP_INTERVAL)
+                await asyncio.sleep(config.RATE_LIMIT_CLEANUP_INTERVAL)
 
                 now = time.monotonic()
                 initial_size = len(self.rate_limiter)
@@ -196,7 +195,7 @@ class Maga(asyncio.DatagramProtocol):
                 # Create a list of IPs to remove to avoid modifying the dict while iterating
                 stale_ips = [
                     ip for ip, timestamps in self.rate_limiter.items()
-                    if not timestamps or timestamps[-1] < now - constants.RATE_LIMIT_CLEANUP_INTERVAL
+                    if not timestamps or timestamps[-1] < now - config.RATE_LIMIT_CLEANUP_INTERVAL
                 ]
 
                 for ip in stale_ips:
@@ -216,7 +215,7 @@ class Maga(asyncio.DatagramProtocol):
             except Exception:
                 self.log.exception("Error in rate limiter cleanup task.")
 
-    async def run(self, port=6881):
+    async def run(self, port=config.DEFAULT_PORT):
         _, _ = await self.loop.create_datagram_endpoint(
                 lambda: self, local_addr=('0.0.0.0', port)
         )
@@ -456,7 +455,7 @@ class Maga(asyncio.DatagramProtocol):
                 return
 
             # If bucket is not full, add the new node
-            if len(bucket) < K:
+            if len(bucket) < config.K:
                 bucket.append({
                     "id": node_id[:],
                     "addr": addr,
@@ -528,7 +527,7 @@ class Maga(asyncio.DatagramProtocol):
             heapq.heappush(heap, (distance, node))
 
         # Get the K smallest items from the heap
-        closest_nodes = [item[1] for item in heapq.nsmallest(K, heap)]
+        closest_nodes = [item[1] for item in heapq.nsmallest(config.K, heap)]
         return closest_nodes
 
     async def handler(self, infohash, addr, peer_addr=None):

@@ -2,9 +2,10 @@ import asyncio
 import pytest
 from unittest.mock import MagicMock, ANY, AsyncMock
 
-from maga.crawler import Maga, K
+from maga.crawler import Maga
 from maga import utils
 from maga import constants
+from maga.config import K
 
 # Mark all tests in this file as asyncio
 pytestmark = pytest.mark.asyncio
@@ -53,7 +54,6 @@ async def test_handle_find_node_query(crawler, monkeypatch):
 
     # 4. Assert the response
     # We expect two calls: one for the find_node response, one for the subsequent find_node query
-    print(send_message_mock.call_args_list)
     assert send_message_mock.call_count == 2
 
     # Find the response call

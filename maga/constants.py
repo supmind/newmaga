@@ -1,9 +1,3 @@
-BOOTSTRAP_NODES = (
-    ("router.bittorrent.com", 6881),
-    ("dht.transmissionbt.com", 6881),
-    ("router.utorrent.com", 6881)
-)
-
 # KRPC message dictionary keys
 KRPC_Y = b"y"
 KRPC_T = b"t"
@@ -42,11 +36,5 @@ KRPC_PING_TID = b"pg"
 KRPC_SERVER_ERROR = [202, "Server Error"]
 
 # Kademlia constants
-K = 8  # K-bucket size
 MIN_NODE_ID = 0
 MAX_NODE_ID = 2**160 - 1
-
-# Rate Limiting
-RATE_LIMIT_WINDOW = 10  # seconds
-RATE_LIMIT_REQUESTS = 100  # requests per window
-RATE_LIMIT_CLEANUP_INTERVAL = 300  # seconds

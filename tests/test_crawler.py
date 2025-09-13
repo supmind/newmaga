@@ -2,8 +2,9 @@ import asyncio
 import pytest
 from unittest.mock import MagicMock, AsyncMock, ANY
 
-from maga.crawler import Maga, K
+from maga.crawler import Maga
 from maga import utils
+from maga.config import K
 
 # Mark all tests in this file as asyncio
 pytestmark = pytest.mark.asyncio
@@ -125,8 +126,8 @@ async def test_get_peers_returns_zero_if_no_peers_found(crawler):
 async def test_rate_limiter_drops_packets(crawler, monkeypatch):
     """Test that the rate limiter drops packets from an IP that exceeds the limit."""
     # Patch constants for the test
-    monkeypatch.setattr("maga.crawler.constants.RATE_LIMIT_REQUESTS", 3)
-    monkeypatch.setattr("maga.crawler.constants.RATE_LIMIT_WINDOW", 1)
+    monkeypatch.setattr("maga.config.RATE_LIMIT_REQUESTS", 3)
+    monkeypatch.setattr("maga.config.RATE_LIMIT_WINDOW", 1)
 
     from fastbencode import bencode
 
