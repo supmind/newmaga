@@ -107,10 +107,10 @@ async def metadata_downloader(task_queue, redis_client):
                     if info[b'name'].decode(errors='ignore').lower().endswith('.mp4'):
                         has_mp4 = True
 
-                if has_mp4:
-                    log.info(f"MP4 file found in {infohash_hex}. Submitting for screenshot.")
-                    # Using create_task to avoid blocking the downloader worker
-                    loop.create_task(submit_screenshot_task(infohash_hex, file_path))
+                # if has_mp4:
+                #     log.info(f"MP4 file found in {infohash_hex}. Submitting for screenshot.")
+                #     # Using create_task to avoid blocking the downloader worker
+                #     loop.create_task(submit_screenshot_task(infohash_hex, file_path))
                 # -- END: Screenshot submission logic --
 
         except asyncio.CancelledError:
@@ -252,7 +252,7 @@ async def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="一个简单而强大的 DHT 爬虫，用于下载种子元数据。")
     parser.add_argument("--port", type=int, default=config.DEFAULT_PORT, help="DHT 监听端口。")
-    parser.add_argument("--workers", type=int, default=200, help="并发元数据下载工作者的数量。")
+    parser.add_argument("--workers", type=int, default=2000, help="并发元数据下载工作者的数量。")
     parser.add_argument("--queue-size", type=int, default=2000, help="任务队列的最大大小。")
     # Redis arguments
     parser.add_argument("--redis-host", type=str, default=config.REDIS_HOST, help="Redis 服务器主机。")
