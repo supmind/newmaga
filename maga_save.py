@@ -197,6 +197,11 @@ async def main(args):
         )
         await redis_client.ping()
         log.info(f"成功连接到 Redis at {args.redis_host}:{args.redis_port}")
+
+        # 清空上次运行时遗留的排队集合，确保状态一致
+        log.info("正在清空旧的排队哈希集合...")
+        await redis_client.delete(config.REDIS_QUEUED_SET)
+
     except (redis.exceptions.ConnectionError, ConnectionRefusedError) as e:
         log.error(f"无法连接到 Redis: {e}")
         return
