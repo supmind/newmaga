@@ -5,6 +5,7 @@ import signal
 import os
 import argparse
 import aiohttp
+import aiofiles
 import redis.asyncio as redis
 
 import config
@@ -68,12 +69,20 @@ async def metadata_downloader(task_queue, redis_client):
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
     while True:
+        infohash, peer_addr = await task_queue.get()
+        infohash_hex = None
+        locked = False
         try:
-            infohash, peer_addr = await task_queue.get()
             infohash_hex = proper_infohash(infohash)
 
+            # Atomically check and claim the infohash. If sadd returns 0, it means
+            # the hash was already in the set, so another worker is handling it.
+            if await redis_client.sadd(config.REDIS_QUEUED_SET, infohash_hex) == 0:
+                # Already being processed, skip.
+                continue
+            locked = True
+
             # 异步下载元数据
-            # 我们从发起 announce_peer 请求的节点下载
             loop = asyncio.get_running_loop()
             info = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop, timeout=10)
 
@@ -84,47 +93,22 @@ async def metadata_downloader(task_queue, redis_client):
                 # 从元数据中提取信息
                 name = info.get(b'name', b'Unknown').decode(errors='ignore')
 
-                # -- 中文注释 --
                 # 将下载的元数据（info字典）编码为bencode格式，并保存为 .torrent 文件
-                # 这是制作 .torrent 文件的标准方式
-                # The torrent file must be a dictionary containing the 'info' key.
                 torrent_data = bencode({b'info': info})
                 file_path = os.path.join(DOWNLOAD_DIR, f"{infohash_hex}.torrent")
-                with open(file_path, "wb") as f:
-                    f.write(torrent_data)
-
-                # log.info(f"成功下载并保存元数据: Name: {name}, Infohash: {infohash_hex}")
-
-                # -- BEGIN: Screenshot submission logic --
-                has_mp4 = False
-                if b'files' in info:
-                    for file_info in info[b'files']:
-                        path_parts = file_info.get(b'path', [])
-                        if path_parts and path_parts[-1].decode(errors='ignore').lower().endswith('.mp4'):
-                            has_mp4 = True
-                            break
-                elif b'name' in info:
-                    if info[b'name'].decode(errors='ignore').lower().endswith('.mp4'):
-                        has_mp4 = True
-
-                # if has_mp4:
-                #     log.info(f"MP4 file found in {infohash_hex}. Submitting for screenshot.")
-                #     # Using create_task to avoid blocking the downloader worker
-                #     loop.create_task(submit_screenshot_task(infohash_hex, file_path))
-                # -- END: Screenshot submission logic --
+                async with aiofiles.open(file_path, "wb") as f:
+                    await f.write(torrent_data)
 
         except asyncio.CancelledError:
-            # 如果任务被取消，优雅地退出循环
             break
         except Exception:
-            # 记录其他异常，但不要让工作者崩溃
             log.exception(f"处理 infohash 时出错: {infohash_hex}")
         finally:
-            # 确保任务被标记为完成，并从排队集合中移除
-            # 这样即使失败了，将来也有机会重试
-            if 'infohash_hex' in locals():
-                await redis_client.srem(config.REDIS_QUEUED_SET, infohash_hex)
+            # Always mark the task as done.
             task_queue.task_done()
+            # If we locked this hash for processing, we must unlock it.
+            if locked and infohash_hex:
+                await redis_client.srem(config.REDIS_QUEUED_SET, infohash_hex)
 
 
 class SimpleCrawler(Maga):
@@ -148,22 +132,17 @@ class SimpleCrawler(Maga):
         """
         infohash_hex = proper_infohash(infohash)
 
-        # Concurrently check if the infohash is in the processed set or queued set
-        is_processed, is_queued = await asyncio.gather(
-            self.redis_client.sismember(config.REDIS_PROCESSED_SET, infohash_hex),
-            self.redis_client.sismember(config.REDIS_QUEUED_SET, infohash_hex)
-        )
-
-        if is_processed or is_queued:
+        # De-duplication is now handled by the consumer to avoid race conditions.
+        # We only do a preliminary check against the processed set to avoid
+        # re-queueing torrents that are already done.
+        if await self.redis_client.sismember(config.REDIS_PROCESSED_SET, infohash_hex):
             return
 
-        # 先添加到排队集合，再放入任务队列
-        await self.redis_client.sadd(config.REDIS_QUEUED_SET, infohash_hex)
         try:
             self.task_queue.put_nowait((infohash, peer_addr))
         except asyncio.QueueFull:
-            # 如果队列已满，从排队集合中移除，以便稍后有空间时可以重新排队
-            await self.redis_client.srem(config.REDIS_QUEUED_SET, infohash_hex)
+            # If the queue is full, we simply drop the task.
+            pass
 
 
 async def print_stats(crawler, task_queue, redis_client):
@@ -222,12 +201,12 @@ async def main(args):
         for _ in range(args.workers)
     ]
 
+    # 启动定期的统计信息打印任务
+    stats_task = loop.create_task(print_stats(crawler, task_queue, redis_client))
+
     # 在指定端口上运行爬虫
     await crawler.run(port=args.port)
     log.info(f"爬虫正在监听端口 {crawler.transport.get_extra_info('sockname')[1]}")
-
-    # 启动定期的统计信息打印任务
-    stats_task = loop.create_task(print_stats(crawler, task_queue, redis_client))
 
     log.info(f"{args.workers} 个下载工作者已启动。按 Ctrl+C 停止。")
 
