@@ -6,6 +6,7 @@ import os
 import argparse
 import aiohttp
 
+import config
 from maga.crawler import Maga
 from maga.downloader import get_metadata
 from maga.utils import proper_infohash, BoundedSet, format_bytes
@@ -134,20 +135,21 @@ class SimpleCrawler(Maga):
     DHT 爬虫（生产者）。
     它负责发现 infohash 并将它们放入任务队列。
     """
-    def __init__(self, task_queue, queued_hashes, processed_hashes, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, task_queue, queued_hashes, processed_hashes, loop=None):
+        super().__init__(loop=loop)
         self.task_queue = task_queue
         self.queued_hashes = queued_hashes
         self.processed_hashes = processed_hashes
 
-    async def handler(self, infohash, addr, peer_addr=None):
+    async def handle_get_peers(self, infohash, addr):
+        # This crawler is only interested in announce_peer messages
+        pass
+
+    async def handle_announce_peer(self, infohash, addr, peer_addr):
         """
         这个处理器在收到 `announce_peer` 消息时被调用。
         它将发现的任务放入队列，供工作者处理。
         """
-        if not peer_addr:
-            return
-
         infohash_hex = proper_infohash(infohash)
 
         # 只有当任务未被处理且未在队列中时，才加入队列
@@ -191,7 +193,8 @@ async def main(args):
     crawler = SimpleCrawler(
         task_queue=task_queue,
         queued_hashes=QUEUED_INFOHASHES,
-        processed_hashes=PROCESSED_INFOHASHES
+        processed_hashes=PROCESSED_INFOHASHES,
+        loop=loop
     )
 
     # 下载工作者的数量决定了下载的并发度
@@ -227,7 +230,7 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="一个简单而强大的 DHT 爬虫，用于下载种子元数据。")
-    parser.add_argument("--port", type=int, default=6881, help="DHT 监听端口。")
+    parser.add_argument("--port", type=int, default=config.DEFAULT_PORT, help="DHT 监听端口。")
     parser.add_argument("--workers", type=int, default=200, help="并发元数据下载工作者的数量。")
     parser.add_argument("--queue-size", type=int, default=2000, help="任务队列的最大大小。")
     args = parser.parse_args()
