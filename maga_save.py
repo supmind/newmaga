@@ -5,7 +5,7 @@ import signal
 import os
 import argparse
 import aiohttp
-import aioredis
+import redis.asyncio as redis
 
 import config
 from maga.crawler import Maga
@@ -194,13 +194,13 @@ async def main(args):
 
     # 创建 Redis 客户端
     try:
-        redis_client = aioredis.from_url(
+        redis_client = redis.from_url(
             f"redis://{args.redis_host}:{args.redis_port}/{args.redis_db}",
             decode_responses=True
         )
         await redis_client.ping()
         log.info(f"成功连接到 Redis at {args.redis_host}:{args.redis_port}")
-    except (aioredis.exceptions.ConnectionError, ConnectionRefusedError) as e:
+    except (redis.exceptions.ConnectionError, ConnectionRefusedError) as e:
         log.error(f"无法连接到 Redis: {e}")
         return
 

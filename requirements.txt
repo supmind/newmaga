@@ -1,4 +1,4 @@
 uvloop
 fastbencode
 aiohttp
-aioredis
+redis>=4.2.0
