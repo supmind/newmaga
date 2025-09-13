@@ -93,7 +93,7 @@ async def metadata_downloader(task_queue, redis_client):
                 with open(file_path, "wb") as f:
                     f.write(torrent_data)
 
-                log.info(f"成功下载并保存元数据: Name: {name}, Infohash: {infohash_hex}")
+                # log.info(f"成功下载并保存元数据: Name: {name}, Infohash: {infohash_hex}")
 
                 # -- BEGIN: Screenshot submission logic --
                 has_mp4 = False
