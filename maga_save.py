@@ -194,8 +194,7 @@ async def main(args):
         log.info(f"成功连接到 Redis at {args.redis_host}:{args.redis_port}")
 
         es_handler = ESHandler(
-            host=config.ES_HOST,
-            port=config.ES_PORT,
+            hosts=config.ES_HOSTS,
             username=config.ES_USERNAME,
             password=config.ES_PASSWORD
         )

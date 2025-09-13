@@ -40,8 +40,8 @@ REDIS_QUEUED_SET = "maga:queued"
 
 
 # -- Elasticsearch Settings --
-ES_HOST = "localhost"
-ES_PORT = 9200
+# A list of Elasticsearch nodes to connect to. Can include scheme, host, and port.
+ES_HOSTS = ["http://localhost:9200"]  # Example: ["https://user:secret@es.host:443"]
 ES_USERNAME = "your_es_username"  # Change this
 ES_PASSWORD = "your_es_password"  # Change this
 ES_INDEX_NAME = "maga_metadata"

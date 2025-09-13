@@ -37,12 +37,12 @@ INDEX_MAPPING = {
 }
 
 class ESHandler:
-    def __init__(self, host, port, username, password):
+    def __init__(self, hosts, username, password):
         self.client = AsyncElasticsearch(
-            [{'host': host, 'port': port, 'scheme': 'http'}],
+            hosts,
             http_auth=(username, password)
         )
-        log.info(f"Elasticsearch async client initialized for {host}:{port}")
+        log.info(f"Elasticsearch async client initialized for hosts: {hosts}")
 
     async def close(self):
         """Closes the Elasticsearch client connection."""
