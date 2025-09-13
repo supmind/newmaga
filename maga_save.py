@@ -148,13 +148,10 @@ class SimpleCrawler(Maga):
         """
         infohash_hex = proper_infohash(infohash)
 
-        # 使用 SISMEMBER 一次性检查两个集合
-        # [1, 0] -> ismember of processed, not member of queued
-        # [0, 1] -> not member of processed, ismember of queued
-        # [0, 0] -> not member of either
-        is_processed, is_queued = await self.redis_client.smismember(
-            [config.REDIS_PROCESSED_SET, config.REDIS_QUEUED_SET],
-            [infohash_hex, infohash_hex]
+        # Concurrently check if the infohash is in the processed set or queued set
+        is_processed, is_queued = await asyncio.gather(
+            self.redis_client.sismember(config.REDIS_PROCESSED_SET, infohash_hex),
+            self.redis_client.sismember(config.REDIS_QUEUED_SET, infohash_hex)
         )
 
         if is_processed or is_queued:

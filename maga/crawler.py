@@ -317,6 +317,10 @@ class Maga(asyncio.DatagramProtocol):
                 }
             }, addr=addr)
 
+        # Proactively discover nodes from the querier, unless it was a find_node query
+        if query_type != constants.KRPC_FIND_NODE:
+            self.find_node(addr=addr, node_id=node_id)
+
     def ping(self, addr, node_id=None):
         self.send_message({
             constants.KRPC_Y: constants.KRPC_QUERY,
@@ -511,6 +515,9 @@ class Maga(asyncio.DatagramProtocol):
         """
         Find the K closest nodes to a given target ID from the K-buckets.
         """
+        # TODO: This is a naive implementation that iterates through all nodes.
+        # A more efficient approach would be to start from the closest bucket
+        # and expand the search outwards.
         # Using a heap is more efficient for finding the k-smallest items
         # than sorting the entire list.
         all_nodes = (node for bucket in self.k_buckets for node in bucket)
