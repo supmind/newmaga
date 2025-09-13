@@ -1,3 +1,6 @@
 uvloop
 fastbencode
 aiohttp
+elasticsearch-dsl[async]
+aiobotocore
+aioboto3

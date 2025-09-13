@@ -57,19 +57,26 @@ async def test_add_node_full_bucket_evicts_on_ping_failure(crawler):
     Test the eviction logic: when a bucket is full, the oldest node is challenged.
     If it fails the ping, it gets evicted and the new node is added.
     """
-    node_id_prefix = crawler.node_id[:-1]
-    bucket_index = crawler._get_bucket_index(node_id_prefix + b'\x01')
+    bucket_index = 5  # Target a specific bucket for predictability
+    distance_to_target = 1 << bucket_index
 
+    # Fill the bucket to capacity
+    node_ids = []
     for i in range(K):
-        node_id = node_id_prefix + bytes([i])
+        node_id_int = int.from_bytes(crawler.node_id, 'big') ^ (distance_to_target + i)
+        node_id = node_id_int.to_bytes(20, 'big')
+        node_ids.append(node_id)
         await crawler._add_node(node_id, (f"1.1.1.{i}", 1111))
 
     assert len(crawler.k_buckets[bucket_index]) == K
     oldest_node = crawler.k_buckets[bucket_index][0]
 
+    # Mock the _send_query_and_wait to simulate a timeout (returns None)
     crawler._send_query_and_wait = AsyncMock(return_value=None)
 
-    new_node_id = node_id_prefix + bytes([K])
+    # This new node should trigger an eviction attempt on the oldest node
+    new_node_id_int = int.from_bytes(crawler.node_id, 'big') ^ (distance_to_target + K)
+    new_node_id = new_node_id_int.to_bytes(20, 'big')
     await crawler._add_node(new_node_id, (f"2.2.2.2", 2222))
 
     crawler._send_query_and_wait.assert_called_once_with(
@@ -86,19 +93,24 @@ async def test_add_node_full_bucket_keeps_on_ping_success(crawler):
     Test the eviction logic: when a bucket is full, the oldest node is challenged.
     If it succeeds the ping, it is kept and the new node is discarded.
     """
-    node_id_prefix = crawler.node_id[:-1]
-    bucket_index = crawler._get_bucket_index(node_id_prefix + b'\x01')
+    bucket_index = 5  # Target a specific bucket for predictability
+    distance_to_target = 1 << bucket_index
 
+    # Fill the bucket to capacity
     for i in range(K):
-        node_id = node_id_prefix + bytes([i])
+        node_id_int = int.from_bytes(crawler.node_id, 'big') ^ (distance_to_target + i)
+        node_id = node_id_int.to_bytes(20, 'big')
         await crawler._add_node(node_id, (f"1.1.1.{i}", 1111))
 
     assert len(crawler.k_buckets[bucket_index]) == K
     oldest_node_before_ping = crawler.k_buckets[bucket_index][0]
 
+    # Mock the _send_query_and_wait to simulate a success
     crawler._send_query_and_wait = AsyncMock(return_value={"y": "r"})
 
-    new_node_id = node_id_prefix + bytes([K])
+    # This new node should trigger an eviction attempt on the oldest node
+    new_node_id_int = int.from_bytes(crawler.node_id, 'big') ^ (distance_to_target + K)
+    new_node_id = new_node_id_int.to_bytes(20, 'big')
     await crawler._add_node(new_node_id, (f"2.2.2.2", 2222))
 
     crawler._send_query_and_wait.assert_called_once()
@@ -106,6 +118,7 @@ async def test_add_node_full_bucket_keeps_on_ping_success(crawler):
     bucket = crawler.k_buckets[bucket_index]
     assert len(bucket) == K
     assert not any(n["id"] == new_node_id for n in bucket)
+    # The oldest node should have been moved to the end of the deque
     assert oldest_node_before_ping["id"] == bucket[-1]["id"]
 
 async def test_get_peers_returns_zero_if_no_peers_found(crawler):
