@@ -37,3 +37,22 @@ REDIS_DB = 0
 # Names for the Redis sets used for deduplication
 REDIS_PROCESSED_SET = "maga:processed"
 REDIS_QUEUED_SET = "maga:queued"
+
+
+# -- Elasticsearch Settings --
+ES_HOST = "localhost"
+ES_PORT = 9200
+ES_USERNAME = "your_es_username"  # Change this
+ES_PASSWORD = "your_es_password"  # Change this
+ES_INDEX_NAME = "maga_metadata"
+
+
+# -- R2/S3 Storage Settings --
+# The full endpoint URL for your R2 bucket.
+R2_ENDPOINT_URL = "https://<your_account_id>.r2.cloudflarestorage.com"  # Change this
+# Your R2 Access Key ID.
+R2_ACCESS_KEY_ID = "your_r2_access_key_id"  # Change this
+# Your R2 Secret Access Key.
+R2_SECRET_ACCESS_KEY = "your_r2_secret_access_key"  # Change this
+# The name of the bucket to store metadata files.
+R2_BUCKET_NAME = "maga-torrents"  # Change this

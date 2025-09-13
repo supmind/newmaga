@@ -11,6 +11,8 @@ import redis.asyncio as redis
 import config
 from maga.crawler import Maga
 from maga.downloader import get_metadata
+from maga.es_handler import ESHandler
+from maga.r2_handler import R2Handler
 from maga.utils import proper_infohash, format_bytes
 from fastbencode import bencode
 
@@ -60,14 +62,11 @@ async def submit_screenshot_task(infohash, torrent_path):
         log.error(f"An error occurred while submitting task for {infohash}: {e}")
 
 
-async def metadata_downloader(task_queue, redis_client):
+async def metadata_downloader(task_queue, redis_client, es_handler, r2_handler):
     """
     元数据下载器（消费者/工作者）。
-    它从任务队列中获取任务，并下载元数据。
+    它从任务队列中获取任务，下载元数据，然后将其上传到外部服务。
     """
-    # 确保下载目录存在
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
     while True:
         infohash, peer_addr = await task_queue.get()
         infohash_hex = None
@@ -76,37 +75,54 @@ async def metadata_downloader(task_queue, redis_client):
             infohash_hex = proper_infohash(infohash)
 
             # Atomically check and claim the infohash. If sadd returns 0, it means
-            # the hash was already in the set, so another worker is handling it.
+            # another worker is already handling it, so we skip.
             if await redis_client.sadd(config.REDIS_QUEUED_SET, infohash_hex) == 0:
-                # Already being processed, skip.
                 continue
             locked = True
 
-            # 异步下载元数据
+            # Asynchronously download metadata
             loop = asyncio.get_running_loop()
             info = await get_metadata(infohash, peer_addr[0], peer_addr[1], loop=loop, timeout=10)
 
             if info:
-                # 下载成功后，将 infohash 添加到已处理集合
-                await redis_client.sadd(config.REDIS_PROCESSED_SET, infohash_hex)
+                # This is the new transactional logic block.
+                # We only mark as "processed" in Redis if both ES and R2 uploads succeed.
+                try:
+                    # 1. Prepare data
+                    name = info.get(b'name', b'Unknown').decode('utf-8', 'ignore')
+                    files_list = info.get(b'files')
+                    total_size = sum(f.get(b'length', 0) for f in files_list) if files_list else info.get(b'length', 0)
+                    torrent_data = bencode({b'info': info})
 
-                # 从元数据中提取信息
-                name = info.get(b'name', b'Unknown').decode(errors='ignore')
+                    # 2. Perform uploads
+                    await es_handler.upload_document(
+                        infohash=infohash_hex,
+                        name=name,
+                        files_list=files_list,
+                        total_size=total_size
+                    )
+                    await r2_handler.upload_torrent(
+                        torrent_data=torrent_data,
+                        infohash_hex=infohash_hex
+                    )
 
-                # 将下载的元数据（info字典）编码为bencode格式，并保存为 .torrent 文件
-                torrent_data = bencode({b'info': info})
-                file_path = os.path.join(DOWNLOAD_DIR, f"{infohash_hex}.torrent")
-                async with aiofiles.open(file_path, "wb") as f:
-                    await f.write(torrent_data)
+                    # 3. If BOTH succeed, mark as processed
+                    await redis_client.sadd(config.REDIS_PROCESSED_SET, infohash_hex)
+                    log.info(f"Successfully processed and uploaded: {infohash_hex} - {name}")
+
+                except Exception as e:
+                    # If any upload fails, log the error and do not mark as processed.
+                    # The `finally` block will still clean up the queued set.
+                    log.error(f"Failed to complete ES/R2 upload for {infohash_hex}: {e}")
 
         except asyncio.CancelledError:
             break
         except Exception:
-            log.exception(f"处理 infohash 时出错: {infohash_hex}")
+            log.exception(f"An error occurred in the metadata downloader for infohash: {infohash_hex}")
         finally:
-            # Always mark the task as done.
+            # Always mark the task as done in the asyncio queue.
             task_queue.task_done()
-            # If we locked this hash for processing, we must unlock it.
+            # If we locked this hash for processing, we must unlock it from the Redis queued set.
             if locked and infohash_hex:
                 await redis_client.srem(config.REDIS_QUEUED_SET, infohash_hex)
 
@@ -168,7 +184,7 @@ async def main(args):
     log.info("启动 DHT 爬虫 (生产者-消费者模型)...")
     loop = asyncio.get_running_loop()
 
-    # 创建 Redis 客户端
+    # Create clients for external services
     try:
         redis_client = redis.from_url(
             f"redis://{args.redis_host}:{args.redis_port}/{args.redis_db}",
@@ -177,52 +193,72 @@ async def main(args):
         await redis_client.ping()
         log.info(f"成功连接到 Redis at {args.redis_host}:{args.redis_port}")
 
-        # 清空上次运行时遗留的排队集合，确保状态一致
+        es_handler = ESHandler(
+            host=config.ES_HOST,
+            port=config.ES_PORT,
+            username=config.ES_USERNAME,
+            password=config.ES_PASSWORD
+        )
+        await es_handler.init_index()
+
+        r2_handler = R2Handler(
+            endpoint_url=config.R2_ENDPOINT_URL,
+            access_key_id=config.R2_ACCESS_KEY_ID,
+            secret_access_key=config.R2_SECRET_ACCESS_KEY,
+            bucket_name=config.R2_BUCKET_NAME
+        )
+
+        # Clear any leftover hashes from a previous run
         log.info("正在清空旧的排队哈希集合...")
         await redis_client.delete(config.REDIS_QUEUED_SET)
 
-    except (redis.exceptions.ConnectionError, ConnectionRefusedError) as e:
-        log.error(f"无法连接到 Redis: {e}")
+    except Exception as e:
+        log.error(f"无法初始化外部服务客户端: {e}")
         return
 
-    # 一个有界队列，用作生产者和消费者之间的缓冲区
+    # A bounded queue to act as a buffer between producer and consumers
     task_queue = asyncio.Queue(maxsize=args.queue_size)
 
-    # 爬虫作为生产者
+    # The crawler acts as the producer
     crawler = SimpleCrawler(
         task_queue=task_queue,
         redis_client=redis_client,
         loop=loop
     )
 
-    # 下载工作者的数量决定了下载的并发度
+    # The number of workers determines the download concurrency
     workers = [
-        loop.create_task(metadata_downloader(task_queue, redis_client))
+        loop.create_task(metadata_downloader(task_queue, redis_client, es_handler, r2_handler))
         for _ in range(args.workers)
     ]
 
-    # 启动定期的统计信息打印任务
+    # Start the periodic statistics printer
     stats_task = loop.create_task(print_stats(crawler, task_queue, redis_client))
 
-    # 在指定端口上运行爬虫
+    # Run the crawler on the specified port
     await crawler.run(port=args.port)
     log.info(f"爬虫正在监听端口 {crawler.transport.get_extra_info('sockname')[1]}")
 
     log.info(f"{args.workers} 个下载工作者已启动。按 Ctrl+C 停止。")
 
-    # 处理优雅关闭
+    # Handle graceful shutdown
     stop = asyncio.Future()
     loop.add_signal_handler(signal.SIGINT, stop.set_result, None)
     await stop
 
     log.info("正在关闭...")
-    # 关闭 Redis 连接
+    # Close external service connections
+    await es_handler.close()
+    await r2_handler.close()
     await redis_client.close()
+
+    # Cancel all running tasks
     stats_task.cancel()
     for worker in workers:
         worker.cancel()
     crawler.stop()
-    # 等待所有工作者和爬虫任务完成
+
+    # Wait for all tasks to complete
     await asyncio.gather(*workers, return_exceptions=True)
     await task_queue.join()
     log.info("爬虫已优雅地关闭。")
