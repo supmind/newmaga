@@ -1,3 +1,4 @@
 uvloop
 fastbencode
 aiohttp
+aioredis

@@ -5,11 +5,12 @@ import signal
 import os
 import argparse
 import aiohttp
+import aioredis
 
 import config
 from maga.crawler import Maga
 from maga.downloader import get_metadata
-from maga.utils import proper_infohash, BoundedSet, format_bytes
+from maga.utils import proper_infohash, format_bytes
 from fastbencode import bencode
 
 # -- 中文注释 --
@@ -22,11 +23,6 @@ log = logging.getLogger(__name__)
 
 # 定义元数据存储目录
 DOWNLOAD_DIR = "downloads"
-
-# 使用有界集合来跟踪已处理和已加入队列的 infohash，防止重复工作
-# BoundedSet 是一个有最大大小限制的集合，当超过大小时，会自动丢弃最旧的元素
-PROCESSED_INFOHASHES = BoundedSet(max_size=1_000_000)
-QUEUED_INFOHASHES = BoundedSet(max_size=1_000_000)
 
 
 async def submit_screenshot_task(infohash, torrent_path):
@@ -63,7 +59,7 @@ async def submit_screenshot_task(infohash, torrent_path):
         log.error(f"An error occurred while submitting task for {infohash}: {e}")
 
 
-async def metadata_downloader(task_queue, queued_hashes):
+async def metadata_downloader(task_queue, redis_client):
     """
     元数据下载器（消费者/工作者）。
     它从任务队列中获取任务，并下载元数据。
@@ -83,7 +79,7 @@ async def metadata_downloader(task_queue, queued_hashes):
 
             if info:
                 # 下载成功后，将 infohash 添加到已处理集合
-                PROCESSED_INFOHASHES.add(infohash_hex)
+                await redis_client.sadd(config.REDIS_PROCESSED_SET, infohash_hex)
 
                 # 从元数据中提取信息
                 name = info.get(b'name', b'Unknown').decode(errors='ignore')
@@ -126,7 +122,8 @@ async def metadata_downloader(task_queue, queued_hashes):
         finally:
             # 确保任务被标记为完成，并从排队集合中移除
             # 这样即使失败了，将来也有机会重试
-            queued_hashes.remove(infohash_hex)
+            if 'infohash_hex' in locals():
+                await redis_client.srem(config.REDIS_QUEUED_SET, infohash_hex)
             task_queue.task_done()
 
 
@@ -135,11 +132,10 @@ class SimpleCrawler(Maga):
     DHT 爬虫（生产者）。
     它负责发现 infohash 并将它们放入任务队列。
     """
-    def __init__(self, task_queue, queued_hashes, processed_hashes, loop=None):
+    def __init__(self, task_queue, redis_client, loop=None):
         super().__init__(loop=loop)
         self.task_queue = task_queue
-        self.queued_hashes = queued_hashes
-        self.processed_hashes = processed_hashes
+        self.redis_client = redis_client
 
     async def handle_get_peers(self, infohash, addr):
         # This crawler is only interested in announce_peer messages
@@ -152,30 +148,40 @@ class SimpleCrawler(Maga):
         """
         infohash_hex = proper_infohash(infohash)
 
-        # 只有当任务未被处理且未在队列中时，才加入队列
-        if infohash_hex in self.queued_hashes or infohash_hex in self.processed_hashes:
+        # 使用 SISMEMBER 一次性检查两个集合
+        # [1, 0] -> ismember of processed, not member of queued
+        # [0, 1] -> not member of processed, ismember of queued
+        # [0, 0] -> not member of either
+        is_processed, is_queued = await self.redis_client.smismember(
+            [config.REDIS_PROCESSED_SET, config.REDIS_QUEUED_SET],
+            [infohash_hex, infohash_hex]
+        )
+
+        if is_processed or is_queued:
             return
 
         # 先添加到排队集合，再放入任务队列
-        self.queued_hashes.add(infohash_hex)
+        await self.redis_client.sadd(config.REDIS_QUEUED_SET, infohash_hex)
         try:
             self.task_queue.put_nowait((infohash, peer_addr))
         except asyncio.QueueFull:
             # 如果队列已满，从排队集合中移除，以便稍后有空间时可以重新排队
-            self.queued_hashes.remove(infohash_hex)
+            await self.redis_client.srem(config.REDIS_QUEUED_SET, infohash_hex)
 
 
-async def print_stats(crawler, task_queue):
+async def print_stats(crawler, task_queue, redis_client):
     """
     一个定期任务，用于打印爬虫和任务队列的统计信息。
     """
     while True:
         await asyncio.sleep(30)
+        queued_count = await redis_client.scard(config.REDIS_QUEUED_SET)
+        processed_count = await redis_client.scard(config.REDIS_PROCESSED_SET)
         log.info(
             f"[统计] DHT 节点: {sum(len(b) for b in crawler.k_buckets)} | "
             f"队列大小: {task_queue.qsize()}/{task_queue.maxsize} | "
-            f"已排队哈希: {len(QUEUED_INFOHASHES)} | "
-            f"已处理哈希: {len(PROCESSED_INFOHASHES)}"
+            f"已排队哈希 (Redis): {queued_count} | "
+            f"已处理哈希 (Redis): {processed_count}"
         )
 
 
@@ -186,20 +192,31 @@ async def main(args):
     log.info("启动 DHT 爬虫 (生产者-消费者模型)...")
     loop = asyncio.get_running_loop()
 
+    # 创建 Redis 客户端
+    try:
+        redis_client = aioredis.from_url(
+            f"redis://{args.redis_host}:{args.redis_port}/{args.redis_db}",
+            decode_responses=True
+        )
+        await redis_client.ping()
+        log.info(f"成功连接到 Redis at {args.redis_host}:{args.redis_port}")
+    except (aioredis.exceptions.ConnectionError, ConnectionRefusedError) as e:
+        log.error(f"无法连接到 Redis: {e}")
+        return
+
     # 一个有界队列，用作生产者和消费者之间的缓冲区
     task_queue = asyncio.Queue(maxsize=args.queue_size)
 
     # 爬虫作为生产者
     crawler = SimpleCrawler(
         task_queue=task_queue,
-        queued_hashes=QUEUED_INFOHASHES,
-        processed_hashes=PROCESSED_INFOHASHES,
+        redis_client=redis_client,
         loop=loop
     )
 
     # 下载工作者的数量决定了下载的并发度
     workers = [
-        loop.create_task(metadata_downloader(task_queue, QUEUED_INFOHASHES))
+        loop.create_task(metadata_downloader(task_queue, redis_client))
         for _ in range(args.workers)
     ]
 
@@ -208,7 +225,7 @@ async def main(args):
     log.info(f"爬虫正在监听端口 {crawler.transport.get_extra_info('sockname')[1]}")
 
     # 启动定期的统计信息打印任务
-    stats_task = loop.create_task(print_stats(crawler, task_queue))
+    stats_task = loop.create_task(print_stats(crawler, task_queue, redis_client))
 
     log.info(f"{args.workers} 个下载工作者已启动。按 Ctrl+C 停止。")
 
@@ -218,6 +235,8 @@ async def main(args):
     await stop
 
     log.info("正在关闭...")
+    # 关闭 Redis 连接
+    await redis_client.close()
     stats_task.cancel()
     for worker in workers:
         worker.cancel()
@@ -233,6 +252,10 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=config.DEFAULT_PORT, help="DHT 监听端口。")
     parser.add_argument("--workers", type=int, default=200, help="并发元数据下载工作者的数量。")
     parser.add_argument("--queue-size", type=int, default=2000, help="任务队列的最大大小。")
+    # Redis arguments
+    parser.add_argument("--redis-host", type=str, default=config.REDIS_HOST, help="Redis 服务器主机。")
+    parser.add_argument("--redis-port", type=int, default=config.REDIS_PORT, help="Redis 服务器端口。")
+    parser.add_argument("--redis-db", type=int, default=config.REDIS_DB, help="Redis 数据库编号。")
     args = parser.parse_args()
 
     try:

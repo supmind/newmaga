@@ -27,3 +27,13 @@ RATE_LIMIT_WINDOW = 10
 RATE_LIMIT_REQUESTS = 100
 # The interval in seconds to clean up stale entries in the rate limiter.
 RATE_LIMIT_CLEANUP_INTERVAL = 300
+
+# -- Redis Settings --
+# Connection details for Redis server
+REDIS_HOST = "localhost"
+REDIS_PORT = 6379
+REDIS_DB = 0
+
+# Names for the Redis sets used for deduplication
+REDIS_PROCESSED_SET = "maga:processed"
+REDIS_QUEUED_SET = "maga:queued"
