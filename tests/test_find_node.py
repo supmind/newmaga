@@ -53,19 +53,10 @@ async def test_handle_find_node_query(crawler, monkeypatch):
     await crawler.handle_query(tid, constants.KRPC_FIND_NODE, query_args, querying_addr)
 
     # 4. Assert the response
-    # We expect two calls: one for the find_node response, one for the subsequent find_node query
-    assert send_message_mock.call_count == 2
-
-    # Find the response call
-    response_call = None
-    for call in send_message_mock.call_args_list:
-        if call.args[0][constants.KRPC_Y] == constants.KRPC_RESPONSE:
-            response_call = call
-            break
-
-    assert response_call is not None, "Did not find a response message being sent"
+    send_message_mock.assert_called_once()
 
     # Get the arguments passed to send_message
+    response_call = send_message_mock.call_args
     response_data = response_call.args[0]
     response_addr = response_call.kwargs['addr']
 

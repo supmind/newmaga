@@ -27,13 +27,11 @@ __version__ = '3.0.0'
 
 
 class Maga(asyncio.DatagramProtocol):
-    def __init__(self, loop=None, bootstrap_nodes=config.BOOTSTRAP_NODES, interval=config.CRAWLER_INTERVAL, handler=None,
+    def __init__(self, loop=None, bootstrap_nodes=config.BOOTSTRAP_NODES, interval=config.CRAWLER_INTERVAL,
                  node_queue_maxsize=config.NODE_QUEUE_MAXSIZE, node_processor_concurrency=config.NODE_PROCESSOR_CONCURRENCY):
         self.node_id = utils.random_node_id()
         self.transport = None
         self.loop = loop or asyncio.get_event_loop()
-        if handler:
-            self.handler = handler
         self.log = logging.getLogger("Crawler")
         self._pending_queries = {}
         self.background_tasks = set()
@@ -319,8 +317,6 @@ class Maga(asyncio.DatagramProtocol):
                 }
             }, addr=addr)
 
-        self.find_node(addr=addr, node_id=node_id)
-
     def ping(self, addr, node_id=None):
         self.send_message({
             constants.KRPC_Y: constants.KRPC_QUERY,
@@ -530,20 +526,8 @@ class Maga(asyncio.DatagramProtocol):
         closest_nodes = [item[1] for item in heapq.nsmallest(config.K, heap)]
         return closest_nodes
 
-    async def handler(self, infohash, addr, peer_addr=None):
-        """
-        Default handler for discovered infohashes. Does nothing.
-        """
-        raise NotImplementedError
-
     async def handle_get_peers(self, infohash, addr):
-        try:
-            await self.handler(infohash, addr)
-        except NotImplementedError:
-            pass
+        pass
 
     async def handle_announce_peer(self, infohash, addr, peer_addr):
-        try:
-            await self.handler(infohash, addr, peer_addr=peer_addr)
-        except NotImplementedError:
-            pass
+        pass

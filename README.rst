@@ -60,11 +60,7 @@ Here is a simplified version of the code from ``main.py``:
     logging.basicConfig(level=logging.INFO)
 
     class MyCrawler(Maga):
-        async def handler(self, infohash, addr, peer_addr=None):
-            # This handler is called for announce_peer messages
-            if not peer_addr:
-                return
-
+        async def handle_announce_peer(self, infohash, addr, peer_addr):
             infohash_hex = proper_infohash(infohash)
             print(f"Discovered {infohash_hex} from {peer_addr}")
 
@@ -115,8 +111,7 @@ This tool allows you to test the ``get_peers`` functionality for a specific info
 API Overview
 ------------
 
-To build your own crawler, you simply subclass ``maga.Maga`` and override one or more of its handlers:
+To build your own crawler, you simply subclass ``maga.Maga`` and override one or both of its handlers:
 
-*   ``async def handler(self, infohash, addr, peer_addr=None)``: A high-level handler that is called for ``announce_peer`` messages. This is the easiest way to get started.
 *   ``async def handle_get_peers(self, infohash, addr)``: This handler is called when a ``get_peers`` query is received from another node. ``addr`` is the address of the querying node.
 *   ``async def handle_announce_peer(self, infohash, addr, peer_addr)``: This handler is called when an ``announce_peer`` query is received. ``addr`` is the address of the announcing DHT node, and ``peer_addr`` is the address of the peer that is part of the torrent swarm.
