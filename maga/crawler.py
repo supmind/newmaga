@@ -18,9 +18,9 @@ import collections
 from fastbencode import bencode, bdecode
 import logging
 
+import config
 from . import utils
 from . import constants
-from . import config
 
 
 __version__ = '3.0.0'

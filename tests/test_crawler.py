@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, AsyncMock, ANY
 
 from maga.crawler import Maga
 from maga import utils
-from maga.config import K
+import config
 
 # Mark all tests in this file as asyncio
 pytestmark = pytest.mark.asyncio
@@ -61,16 +61,16 @@ async def test_add_node_full_bucket_evicts_on_ping_failure(crawler):
     node_id_prefix = crawler.node_id[:-1]
     bucket_index = crawler._get_bucket_index(node_id_prefix + b'\x01')
 
-    for i in range(K):
+    for i in range(config.K):
         node_id = node_id_prefix + bytes([i])
         await crawler._add_node(node_id, (f"1.1.1.{i}", 1111))
 
-    assert len(crawler.k_buckets[bucket_index]) == K
+    assert len(crawler.k_buckets[bucket_index]) == config.K
     oldest_node = crawler.k_buckets[bucket_index][0]
 
     crawler._send_query_and_wait = AsyncMock(return_value=None)
 
-    new_node_id = node_id_prefix + bytes([K])
+    new_node_id = node_id_prefix + bytes([config.K])
     await crawler._add_node(new_node_id, (f"2.2.2.2", 2222))
 
     crawler._send_query_and_wait.assert_called_once_with(
@@ -78,7 +78,7 @@ async def test_add_node_full_bucket_evicts_on_ping_failure(crawler):
     )
 
     bucket = crawler.k_buckets[bucket_index]
-    assert len(bucket) == K
+    assert len(bucket) == config.K
     assert oldest_node not in bucket
     assert any(n["id"] == new_node_id for n in bucket)
 
@@ -90,22 +90,22 @@ async def test_add_node_full_bucket_keeps_on_ping_success(crawler):
     node_id_prefix = crawler.node_id[:-1]
     bucket_index = crawler._get_bucket_index(node_id_prefix + b'\x01')
 
-    for i in range(K):
+    for i in range(config.K):
         node_id = node_id_prefix + bytes([i])
         await crawler._add_node(node_id, (f"1.1.1.{i}", 1111))
 
-    assert len(crawler.k_buckets[bucket_index]) == K
+    assert len(crawler.k_buckets[bucket_index]) == config.K
     oldest_node_before_ping = crawler.k_buckets[bucket_index][0]
 
     crawler._send_query_and_wait = AsyncMock(return_value={"y": "r"})
 
-    new_node_id = node_id_prefix + bytes([K])
+    new_node_id = node_id_prefix + bytes([config.K])
     await crawler._add_node(new_node_id, (f"2.2.2.2", 2222))
 
     crawler._send_query_and_wait.assert_called_once()
 
     bucket = crawler.k_buckets[bucket_index]
-    assert len(bucket) == K
+    assert len(bucket) == config.K
     assert not any(n["id"] == new_node_id for n in bucket)
     assert oldest_node_before_ping["id"] == bucket[-1]["id"]
 
@@ -126,8 +126,8 @@ async def test_get_peers_returns_zero_if_no_peers_found(crawler):
 async def test_rate_limiter_drops_packets(crawler, monkeypatch):
     """Test that the rate limiter drops packets from an IP that exceeds the limit."""
     # Patch constants for the test
-    monkeypatch.setattr("maga.config.RATE_LIMIT_REQUESTS", 3)
-    monkeypatch.setattr("maga.config.RATE_LIMIT_WINDOW", 1)
+    monkeypatch.setattr("config.RATE_LIMIT_REQUESTS", 3)
+    monkeypatch.setattr("config.RATE_LIMIT_WINDOW", 1)
 
     from fastbencode import bencode
 

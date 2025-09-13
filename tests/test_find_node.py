@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, ANY, AsyncMock
 from maga.crawler import Maga
 from maga import utils
 from maga import constants
-from maga.config import K
+import config
 
 # Mark all tests in this file as asyncio
 pytestmark = pytest.mark.asyncio
@@ -30,7 +30,7 @@ async def test_handle_find_node_query(crawler, monkeypatch):
     # 1. Populate k-buckets with more than K nodes to ensure we get exactly K back
     # Mock _send_query_and_wait to prevent real network calls during _add_node
     monkeypatch.setattr(crawler, "_send_query_and_wait", AsyncMock(return_value=None))
-    for i in range(K + 5):
+    for i in range(config.K + 5):
         # Make IDs somewhat predictable for debugging
         node_id = b'\xaa' * 19 + bytes([i])
         await crawler._add_node(node_id, (f"1.1.1.{i}", 1111))
@@ -80,7 +80,7 @@ async def test_handle_find_node_query(crawler, monkeypatch):
     unpacked_nodes = list(utils.split_nodes(response_r[constants.KRPC_NODES]))
 
     # We should get K nodes back
-    assert len(unpacked_nodes) == K
+    assert len(unpacked_nodes) == config.K
 
     # The returned nodes should be the closest ones to the target_id
     all_nodes = []
@@ -89,7 +89,7 @@ async def test_handle_find_node_query(crawler, monkeypatch):
 
     # Sort all nodes by distance to find the true K closest
     all_nodes.sort(key=lambda n: utils.get_distance(n['id'], target_id))
-    expected_closest_nodes = all_nodes[:K]
+    expected_closest_nodes = all_nodes[:config.K]
     expected_node_ids = {n['id'] for n in expected_closest_nodes}
 
     returned_node_ids = {n[0] for n in unpacked_nodes}
